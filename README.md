@@ -2,7 +2,7 @@
 
 ![Myrmidon Banner](https://capsule-render.vercel.app/api?type=waving&color=0:000000,100:2E3440&height=220&section=header&text=Myrmidon&fontSize=90&fontColor=FFFFFF&animation=fadeIn&fontAlignY=35&rotate=-2&stroke=4C566A&strokeWidth=2&desc=Distributed%20Polyglot%20Actor%20Runtime&descSize=20&descAlignY=60)
 
-![Version](https://img.shields.io/badge/version-0.1.0-blue.svg?style=for-the-badge)
+![Version](https://img.shields.io/badge/version-0.1.1-blue.svg?style=for-the-badge)
 ![Language](https://img.shields.io/badge/language-Rust%20%7C%20Python-orange.svg?style=for-the-badge&logo=rust)
 ![License](https://img.shields.io/badge/license-AGPL_3.0-green.svg?style=for-the-badge)
 ![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20Windows%20%7C%20macOS-lightgrey.svg?style=for-the-badge&logo=linux)
@@ -39,11 +39,11 @@ Actors are first-class citizens of the network.
 * **Async Discovery:** Resolve remote service PIDs using native Python `await` without blocking the event loop.
 * **Location Transparency:** Send messages to actors whether they reside on the local CPU or a server across the globe.
 
-### 🛡️ Distributed Supervision
+### 🛡️ Distributed Supervision & Self-Healing
 Built-in fault tolerance modeled after the "Let it Crash" philosophy.
-* **Structured System Messages:** Actor exits and hot-swaps are delivered as `PySystemMessage` objects, providing rich context for supervisor logic.
-* **Remote Monitoring:** A node can "watch" a remote PID. If the network drops or the remote process crashes, the local supervisor is notified.
-* **Restart Strategies:** Define `RestartOne` or `RestartAll` logic to automatically recover from failures.
+* **Heartbeat Monitoring:** The mesh automatically sends `PING`/`PONG` signals (0x02/0x03) to detect silent failures (e.g., GIL freezes or half-open TCP connections).
+* **Structured System Messages:** Actor exits, hot-swaps, and heartbeats are delivered as `PySystemMessage` objects, providing rich context for supervisor logic.
+* **Self-Healing Factories:** Use `supervise_with_factory` to define Python closures that automatically re-resolve and restart connections when a remote node comes back online.
 
 ### 🚀 Zero-Copy Memory Management
 Optimized for high-throughput data processing.
@@ -69,7 +69,8 @@ Myrmidon uses a proprietary length-prefixed binary protocol over TCP for inter-n
 | :--- | :--- | :--- |
 | `0x00` | **User Message** | `[PID: u64][LEN: u32][DATA: Bytes]` |
 | `0x01` | **Resolve Request** | `[LEN: u32][NAME: String]` → Returns `[PID: u64]` |
-| `0x02` | **System Signal** | High-priority signals (Exit, Link, Monitor) |
+| `0x02` | **Heartbeat (Ping)** | `[Empty]` — Probe remote node health |
+| `0x03` | **Heartbeat (Pong)** | `[Empty]` — Acknowledge health |
 
 ### Memory Safety & FFI
 By using **PyO3** and **Tokio**, Myrmidon bridges the gap between Rust’s memory safety and Python’s rapid development:
@@ -101,13 +102,13 @@ maturin develop --release
 
 ## Usage Examples
 
-### 1. Async Service Discovery (Phase 7)
+### 1. Async Service Discovery
 
 ```python
 import asyncio
 import myrmidon
 
-rt = myrmidon.PyRuntime()
+rt = myrmidon.Runtime()
 
 async def find_and_query():
     # Resolve a remote service PID without blocking the asyncio loop
@@ -125,11 +126,14 @@ asyncio.run(find_and_query())
 
 ```python
 # Messages from an observed actor can be data or system events
-messages = rt.get_messages(observer_pid)
+messages = rt._inner.get_messages(observer_pid)
 
 for msg in messages:
     if isinstance(msg, myrmidon.PySystemMessage):
-        print(f"System Event: {msg.type_name} for PID {msg.target_pid}")
+        if msg.type_name == "EXIT":
+            print(f"Actor {msg.target_pid} has crashed!")
+        elif msg.type_name == "PING":
+            pass # Ignore heartbeats
     else:
         print(f"User Data: {msg.decode()}")
 
@@ -144,12 +148,32 @@ def behavior_a(msg):
 def behavior_b(msg):
     print("Logic B (Upgraded!)")
 
-pid = rt.spawn_py_handler(behavior_a, budget=10)
+pid = rt.spawn(behavior_a, budget=10)
 rt.send(pid, b"test") # Prints "Logic A"
 
 # Atomic swap to behavior_b
 rt.hot_swap(pid, behavior_b)
 rt.send(pid, b"test") # Prints "Logic B (Upgraded!)"
+
+```
+
+### 4. Self-Healing Supervisor
+
+```python
+def connection_factory():
+    """Polls for a remote service and returns a local proxy actor."""
+    while True:
+        try:
+            target = rt.resolve_remote("127.0.0.1:9000", "database")
+            if target:
+                rt.monitor_remote("127.0.0.1:9000", target)
+                # Return a new handler that forwards messages
+                return rt.spawn(lambda msg: rt.send_remote("...", target, msg))
+        except:
+            time.sleep(1)
+
+# If the connection drops, this factory is automatically re-run
+rt._inner.supervise_with_factory(proxy_pid, connection_factory, "RestartOne")
 
 ```
 
@@ -185,6 +209,6 @@ Supported. Ensure you have the latest Microsoft C++ Build Tools installed for Py
 
 **Author:** Seuriin ([SSL-ACTX]())
 
-*v0.1.0*
+*v0.1.1*
 
 </div>

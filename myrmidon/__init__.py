@@ -1,18 +1,19 @@
 # myrmidon/__init__.py
 try:
-    from .myrmidon import PyRuntime, version, allocate_buffer
+    from .myrmidon import PyRuntime, PySystemMessage, version, allocate_buffer
 except ImportError:
-    from myrmidon import PyRuntime, version, allocate_buffer
+    from myrmidon import PyRuntime, PySystemMessage, version, allocate_buffer
 
 class Runtime:
     def __init__(self):
         self._inner = PyRuntime()
 
     def spawn(self, handler, budget=100):
+        """Spawn a new actor with a specific reduction budget."""
         return self._inner.spawn_py_handler(handler, budget)
 
     def send(self, pid, data):
-        """Send data to a specific PID."""
+        """Send data to a specific local PID."""
         return self._inner.send(pid, data)
 
     def send_named(self, name: str, data: bytes):
@@ -27,12 +28,20 @@ class Runtime:
         self._inner.register(name, pid)
 
     def resolve(self, name: str):
-        """Look up the PID associated with a name."""
+        """Look up the PID associated with a name locally."""
         return self._inner.resolve(name)
 
     def resolve_remote(self, addr: str, name: str):
-        """Phase 7: Query a remote node for a PID by name."""
+        """Query a remote node for a PID by name (Blocking)."""
         return self._inner.resolve_remote(addr, name)
+
+    def resolve_remote_py(self, addr: str, name: str):
+        """Query a remote node for a PID by name (Async/Awaitable)."""
+        return self._inner.resolve_remote_py(addr, name)
+
+    def is_node_up(self, addr: str) -> bool:
+        """Quick network probe to check if a remote node is reachable."""
+        return self._inner.is_node_up(addr)
 
     def send_buffer(self, pid, buffer_id):
         """Zero-Copy send via Buffer ID."""
@@ -55,9 +64,11 @@ class Runtime:
         self._inner.monitor_remote(addr, pid)
 
     def stop(self, pid):
+        """Stop an actor and close its mailbox."""
         self._inner.stop(pid)
 
     def join(self, pid):
+        """Block until the specified actor exits."""
         self._inner.join(pid)
 
-__all__ = ["Runtime", "version", "allocate_buffer"]
+__all__ = ["Runtime", "PySystemMessage", "version", "allocate_buffer"]

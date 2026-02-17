@@ -64,7 +64,7 @@ impl Runtime {
         rt
     }
 
-    // --- Phase 6: Name Registry ---
+    // --- Name Registry ---
 
     /// Register a name for an actor locally.
     pub fn register(&self, name: String, pid: Pid) {
@@ -85,9 +85,9 @@ impl Runtime {
         }
     }
 
-    // --- Phase 5 & 7: Distributed Networking ---
+    // --- Distributed Networking ---
 
-    /// Phase 5: Enable the node to receive remote messages on the specified TCP address.
+    /// Enable the node to receive remote messages on the specified TCP address.
     pub fn listen(&self, addr: String) {
         let rt_handle = Arc::new(self.clone());
         RUNTIME.spawn(async move {
@@ -98,7 +98,7 @@ impl Runtime {
         });
     }
 
-    /// Phase 7: Resolve a name on a remote node.
+    /// Resolve a name on a remote node.
     /// This is an async call that queries the remote node's registry.
     pub async fn resolve_remote_async(&self, addr: String, name: String) -> Option<Pid> {
         let manager = network::NetworkManager::new(Arc::new(self.clone()));
@@ -112,7 +112,7 @@ impl Runtime {
         }
     }
 
-    /// Phase 5: Send a binary payload to a PID on a specific remote node.
+    /// Send a binary payload to a PID on a specific remote node.
     pub fn send_remote(&self, addr: String, pid: Pid, data: bytes::Bytes) {
         let rt_handle = Arc::new(self.clone());
         RUNTIME.spawn(async move {
@@ -123,18 +123,18 @@ impl Runtime {
         });
     }
 
-    /// Phase 5: Remote Monitoring.
+    /// Remote Monitoring with Heartbeat support.
+    /// Periodically probes the remote node (default 1s interval) to detect failures.
     pub fn monitor_remote(&self, addr: String, pid: Pid) {
         let rt_handle = Arc::new(self.clone());
         RUNTIME.spawn(async move {
             let manager = network::NetworkManager::new(rt_handle.clone());
-            if let Err(_) = manager.send_remote(&addr, pid, bytes::Bytes::from_static(b"PING")).await {
-                rt_handle.supervisor.notify_exit(pid);
-            }
+            // Probes node health at a 1000ms interval for silent failure detection
+            manager.monitor_remote(addr, pid, 1000).await;
         });
     }
 
-    // --- Phase 1 & 4: Lifecycle & Core Logic ---
+    // --- Lifecycle & Core Logic ---
 
     /// Stop an actor by closing its mailbox.
     pub fn stop(&self, pid: Pid) {
@@ -150,7 +150,7 @@ impl Runtime {
         });
     }
 
-    /// Phase 4: Send a Hot Swap signal to the actor.
+    /// Send a Hot Swap signal to the actor.
     pub fn hot_swap(&self, pid: Pid, handler_ptr: usize) {
         if let Some(sender) = self.mailboxes.get(&pid) {
             let _ = sender.send_system(mailbox::SystemMessage::HotSwap(handler_ptr));

@@ -231,6 +231,9 @@ impl PyRuntime {
                     crate::mailbox::Message::System(crate::mailbox::SystemMessage::Exit(pid)) => {
                         let _ = pid;
                     }
+                    // Phase 7.1: Ignore low-level heartbeats in the Python actor loop
+                    crate::mailbox::Message::System(crate::mailbox::SystemMessage::Ping) |
+                    crate::mailbox::Message::System(crate::mailbox::SystemMessage::Pong) => {}
                 }
             }
         };
@@ -243,7 +246,7 @@ impl PyRuntime {
     }
 
     /// Retrieves messages from an observed actor.
-    /// Now maps Message::System to PySystemMessage objects.
+    /// Maps Message::System variants to PySystemMessage objects.
     fn get_messages(&self, py: Python, pid: u64) -> PyResult<Vec<PyObject>> {
         if let Some(vec) = self.inner.get_observed_messages(pid) {
             let out = vec.into_iter().map(|m| match m {
@@ -257,6 +260,18 @@ impl PyRuntime {
                                           crate::mailbox::Message::System(crate::mailbox::SystemMessage::HotSwap(_)) => {
                                               PySystemMessage {
                                                   type_name: "HOT_SWAP".to_string(),
+                                          target_pid: None,
+                                              }.into_py(py)
+                                          }
+                                          crate::mailbox::Message::System(crate::mailbox::SystemMessage::Ping) => {
+                                              PySystemMessage {
+                                                  type_name: "PING".to_string(),
+                                          target_pid: None,
+                                              }.into_py(py)
+                                          }
+                                          crate::mailbox::Message::System(crate::mailbox::SystemMessage::Pong) => {
+                                              PySystemMessage {
+                                                  type_name: "PONG".to_string(),
                                           target_pid: None,
                                               }.into_py(py)
                                           }

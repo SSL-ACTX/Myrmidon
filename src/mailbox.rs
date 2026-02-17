@@ -9,9 +9,13 @@ use bytes::Bytes;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SystemMessage {
     Exit(u64),
-    /// Phase 4: Hot Swap signal containing the raw pointer (usize)
+    /// Hot Swap signal containing the raw pointer (usize)
     /// to the new handler function / closure.
     HotSwap(usize),
+    /// Heartbeat signal to verify actor/node responsiveness.
+    Ping,
+    /// Response to a heartbeat signal.
+    Pong,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -47,9 +51,6 @@ pub fn channel() -> (MailboxSender, MailboxReceiver) {
 
 impl MailboxSender {
     /// Send a message into the mailbox.
-    ///
-    /// Clone the payload so we can return the original `Message` on failure
-    /// without relying on internals of `SendError`.
     pub fn send(&self, msg: Message) -> Result<(), Message> {
         match msg {
             Message::User(b) => {
@@ -90,10 +91,8 @@ impl MailboxSender {
 
 impl MailboxReceiver {
     /// Await a message from the mailbox, prioritizing any already-enqueued
-    /// system messages. If no system message is immediately available we await
-    /// on both channels and return whichever arrives first.
+    /// system messages.
     pub async fn recv(&mut self) -> Option<Message> {
-        // Fast-path: prefer any already-queued system messages.
         if let Ok(sys) = self.rx_sys.try_recv() {
             return Some(Message::System(sys));
         }
