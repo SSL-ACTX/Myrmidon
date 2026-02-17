@@ -32,4 +32,4 @@ jobs:
       - name: Run Rust Tests
         env:
           RUST_BACKTRACE: 1
-        run: cargo test --workspace --verbose --features pyo3 -- --test_threads=1
+        run: cargo test --workspace --verbose --features pyo3
