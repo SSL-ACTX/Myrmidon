@@ -383,6 +383,7 @@ impl PyRuntime {
 
             Python::with_gil(|py| {
                 // 1. Setup asyncio loop for this background thread
+                // We must import asyncio locally inside this thread's context
                 let asyncio = match py.import("asyncio") {
                     Ok(m) => m,
                     Err(e) => {
@@ -392,6 +393,7 @@ impl PyRuntime {
                     }
                 };
 
+                // Create a new loop for this specific actor thread
                 let loop_obj = match asyncio.call_method0("new_event_loop") {
                     Ok(l) => l,
                     Err(e) => {
@@ -401,6 +403,7 @@ impl PyRuntime {
                     }
                 };
 
+                // Set it as the current loop for this thread
                 if let Err(e) = asyncio.call_method1("set_event_loop", (loop_obj,)) {
                     eprintln!("[Myrmidon] Failed to set event loop: {}", e);
                     e.print(py);
@@ -424,7 +427,7 @@ impl PyRuntime {
                     }
                 }
                 
-                // 4. Cleanup
+                // 4. Cleanup: Close the loop when the actor exits
                 let _ = loop_obj.call_method0("close");
             });
         }, budget);
