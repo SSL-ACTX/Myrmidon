@@ -370,7 +370,7 @@ impl PyRuntime {
 
     /// Spawns a pull-based actor.
     /// The `py_callable` is called ONCE with a `PyMailbox` object.
-    /// The Python code is responsible for writing the loop and pulling messages.
+    /// FIX: Creates a new asyncio loop and runs the coroutine to completion.
     fn spawn_with_mailbox(&self, py_callable: PyObject, budget: usize) -> PyResult<u64> {
         let pid = self.inner.spawn_actor_with_budget(move |rx| async move {
             let mailbox = PyMailbox {
@@ -382,10 +382,50 @@ impl PyRuntime {
             }
 
             Python::with_gil(|py| {
-                if let Err(e) = py_callable.call1(py, (mailbox,)) {
-                     eprintln!("[Myrmidon] Python mailbox actor exception: {}", e);
-                     e.print(py);
+                // 1. Setup asyncio loop for this background thread
+                let asyncio = match py.import("asyncio") {
+                    Ok(m) => m,
+                    Err(e) => {
+                        eprintln!("[Myrmidon] Failed to import asyncio: {}", e);
+                        e.print(py);
+                        return;
+                    }
+                };
+
+                let loop_obj = match asyncio.call_method0("new_event_loop") {
+                    Ok(l) => l,
+                    Err(e) => {
+                        eprintln!("[Myrmidon] Failed to create event loop: {}", e);
+                        e.print(py);
+                        return;
+                    }
+                };
+
+                if let Err(e) = asyncio.call_method1("set_event_loop", (loop_obj,)) {
+                    eprintln!("[Myrmidon] Failed to set event loop: {}", e);
+                    e.print(py);
+                    return;
                 }
+
+                // 2. Call the actor function to get the coroutine
+                match py_callable.call1(py, (mailbox,)) {
+                    Ok(coro) => {
+                        // 3. Drive the coroutine using the new loop
+                        // This blocks the Rust task, effectively handing control to the Python loop
+                        let res = loop_obj.call_method1("run_until_complete", (coro,));
+                        if let Err(e) = res {
+                            eprintln!("[Myrmidon] Python mailbox actor crashed: {}", e);
+                            e.print(py);
+                        }
+                    },
+                    Err(e) => {
+                        eprintln!("[Myrmidon] Python mailbox actor startup exception: {}", e);
+                        e.print(py);
+                    }
+                }
+                
+                // 4. Cleanup
+                let _ = loop_obj.call_method0("close");
             });
         }, budget);
 
@@ -398,7 +438,6 @@ impl PyRuntime {
     }
 
     /// Await selectively on observed messages for `pid` using a Python callable.
-    /// Now supports optional timeout (in seconds).
     fn selective_recv_observed_py<'py>(&self, py: Python<'py>, pid: u64, matcher: PyObject, timeout: Option<f64>) -> PyResult<&'py PyAny> {
         let rt = self.inner.clone();
         future_into_py(py, async move {
