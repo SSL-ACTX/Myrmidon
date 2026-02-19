@@ -351,6 +351,25 @@ directly while holding the GIL on the async worker).
 
 ---
 
+## Configuration (environment)
+
+You can tune `release_gil` behavior with environment variables:
+
+- `MYRMIDON_MAX_RELEASE_GIL_THREADS` (integer, default 256): maximum number of
+    dedicated per-actor threads created when `release_gil=True`. When exceeded,
+    the runtime falls back to a shared GIL worker pool.
+- `MYRMIDON_GIL_POOL_SIZE` (integer, default 8): number of threads in the
+    shared GIL worker pool used as a fallback when the dedicated-thread limit is
+    reached.
+
+Example (bash):
+
+```bash
+export MYRMIDON_MAX_RELEASE_GIL_THREADS=128
+export MYRMIDON_GIL_POOL_SIZE=16
+python your_app.py
+```
+
 <div align="center">
 
 **Author:** Seuriin ([SSL-ACTX](https://www.google.com/search?q=https://github.com/SSL-ACTX))

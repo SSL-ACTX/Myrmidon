@@ -14,6 +14,9 @@ use crate::buffer::{global_registry, BufferId};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex as TokioMutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::OnceLock;
+use crossbeam_channel as cb_channel;
 
 #[cfg(feature = "pyo3")]
 use pyo3_asyncio::tokio::future_into_py;
@@ -370,9 +373,142 @@ impl PyRuntime {
     fn spawn_py_handler(&self, py_callable: PyObject, budget: usize, release_gil: Option<bool>) -> PyResult<u64> {
         let release = release_gil.unwrap_or(false);
         let behavior = Arc::new(parking_lot::RwLock::new(py_callable));
+        // Safety guard: limit number of dedicated GIL-release threads to avoid OOM
+        static RELEASE_GIL_THREADS: AtomicUsize = AtomicUsize::new(0);
+        const DEFAULT_MAX_RELEASE_GIL_THREADS: usize = 256;
+        const DEFAULT_GIL_POOL_SIZE: usize = 8;
+
+        // Global shared GIL worker pool (initialized on demand)
+        static GIL_WORKER_POOL: OnceLock<Arc<GilPool>> = OnceLock::new();
+
+        // Pool task description used by shared workers
+        enum PoolTask {
+            Execute { behavior: Arc<parking_lot::RwLock<PyObject>>, bytes: bytes::Bytes },
+            HotSwap { behavior: Arc<parking_lot::RwLock<PyObject>>, ptr: usize },
+        }
+
+        struct GilPool {
+            sender: cb_channel::Sender<PoolTask>,
+        }
+
+        impl GilPool {
+            fn new(size: usize) -> Self {
+                let (tx, rx) = cb_channel::unbounded::<PoolTask>();
+                for _ in 0..size {
+                    let rx = rx.clone();
+                    std::thread::spawn(move || {
+                        while let Ok(task) = rx.recv() {
+                            match task {
+                                PoolTask::Execute { behavior, bytes } => {
+                                    if unsafe { pyo3::ffi::Py_IsInitialized() } == 0 {
+                                        continue;
+                                    }
+                                    Python::with_gil(|py| {
+                                        let guard = behavior.read();
+                                        let cb = guard.as_ref(py);
+                                        let pybytes = PyBytes::new(py, &bytes);
+                                        if let Err(e) = cb.call1((pybytes,)) {
+                                            eprintln!("[Myrmidon] Python actor exception: {}", e);
+                                            e.print(py);
+                                        }
+                                    });
+                                }
+                                PoolTask::HotSwap { behavior, ptr } => {
+                                    if unsafe { pyo3::ffi::Py_IsInitialized() } == 0 {
+                                        continue;
+                                    }
+                                    Python::with_gil(|py| unsafe {
+                                        let new_obj = PyObject::from_owned_ptr(py, ptr as *mut pyo3::ffi::PyObject);
+                                        *behavior.write() = new_obj;
+                                    });
+                                }
+                            }
+                        }
+                    });
+                }
+                GilPool { sender: tx }
+            }
+        }
+
+        // If release is enabled, attempt to create a dedicated OS thread per-actor that
+        // owns the Python interaction loop. We forward incoming messages to
+        // that thread via a std::sync::mpsc channel to avoid per-message
+        // spawn_blocking overhead and blocking-pool saturation. If we exceed the
+        // dedicated-thread limit we fall back to a shared GIL worker pool.
+        let maybe_tx = if release {
+            // Read configurable limits from env
+            let max_threads = std::env::var("MYRMIDON_MAX_RELEASE_GIL_THREADS").ok()
+                .and_then(|s| s.parse::<usize>().ok())
+                .unwrap_or(DEFAULT_MAX_RELEASE_GIL_THREADS);
+
+            let pool_size = std::env::var("MYRMIDON_GIL_POOL_SIZE").ok()
+                .and_then(|s| s.parse::<usize>().ok())
+                .unwrap_or(DEFAULT_GIL_POOL_SIZE);
+
+            // Enforce global limit for dedicated threads
+            let prev = RELEASE_GIL_THREADS.fetch_add(1, Ordering::SeqCst);
+            if prev >= max_threads {
+                // Reached limit: decrement counter and use shared pool instead
+                RELEASE_GIL_THREADS.fetch_sub(1, Ordering::SeqCst);
+                // Initialize or get global pool
+                let _ = GIL_WORKER_POOL.get_or_init(|| Arc::new(GilPool::new(pool_size))).clone();
+                // We'll use shared pool: no dedicated per-actor tx
+                None
+            } else {
+                let (tx, rx) = cb_channel::unbounded::<crate::mailbox::Message>();
+                let b_thread = behavior.clone();
+
+                std::thread::spawn(move || {
+                    if unsafe { pyo3::ffi::Py_IsInitialized() } == 0 {
+                        RELEASE_GIL_THREADS.fetch_sub(1, Ordering::SeqCst);
+                        return;
+                    }
+
+                    while let Ok(msg) = rx.recv() {
+                        match msg {
+                            crate::mailbox::Message::System(crate::mailbox::SystemMessage::HotSwap(ptr)) => {
+                                if unsafe { pyo3::ffi::Py_IsInitialized() } == 0 {
+                                    continue;
+                                }
+                                Python::with_gil(|py| unsafe {
+                                    let new_obj = PyObject::from_owned_ptr(py, ptr as *mut pyo3::ffi::PyObject);
+                                    *b_thread.write() = new_obj;
+                                });
+                            }
+                            crate::mailbox::Message::User(bytes) => {
+                                if unsafe { pyo3::ffi::Py_IsInitialized() } == 0 {
+                                    continue;
+                                }
+                                Python::with_gil(|py| {
+                                    let guard = b_thread.read();
+                                    let cb = guard.as_ref(py);
+                                    let pybytes = PyBytes::new(py, &bytes);
+                                    if let Err(e) = cb.call1((pybytes,)) {
+                                        eprintln!("[Myrmidon] Python actor exception: {}", e);
+                                        e.print(py);
+                                    }
+                                });
+                            }
+                            crate::mailbox::Message::System(crate::mailbox::SystemMessage::Exit(_)) => {
+                                break;
+                            }
+                            crate::mailbox::Message::System(crate::mailbox::SystemMessage::Ping) |
+                            crate::mailbox::Message::System(crate::mailbox::SystemMessage::Pong) => {}
+                        }
+                    }
+                    // Thread is exiting — decrement global counter
+                    RELEASE_GIL_THREADS.fetch_sub(1, Ordering::SeqCst);
+                });
+
+                Some(tx)
+            }
+        } else {
+            None
+        };
 
         let handler = move |msg: crate::mailbox::Message| {
             let b = behavior.clone();
+            let tx = maybe_tx.clone();
             let release_gil = release;
             async move {
                 if unsafe { pyo3::ffi::Py_IsInitialized() } == 0 {
@@ -380,19 +516,18 @@ impl PyRuntime {
                 }
 
                 match msg {
-                    crate::mailbox::Message::System(crate::mailbox::SystemMessage::HotSwap(ptr)) => {
-                        if release_gil {
-                            let b2 = b.clone();
-                            // perform hot-swap inside a blocking thread that acquires the GIL
-                            let _ = tokio::task::spawn_blocking(move || {
-                                if unsafe { pyo3::ffi::Py_IsInitialized() } == 0 {
-                                    return;
-                                }
-                                Python::with_gil(|py| unsafe {
-                                    let new_obj = PyObject::from_owned_ptr(py, ptr as *mut pyo3::ffi::PyObject);
-                                    *b2.write() = new_obj;
-                                });
-                            }).await;
+                    crate::mailbox::Message::System(crate::mailbox::SystemMessage::HotSwap(_)) if tx.is_some() => {
+                        // Forward hot-swap to the dedicated Python thread to perform
+                        // the pointer->PyObject conversion under the GIL.
+                        if let Some(tx) = tx {
+                            let _ = tx.send(msg);
+                        }
+                    }
+                    crate::mailbox::Message::System(crate::mailbox::SystemMessage::HotSwap(ptr)) if release_gil => {
+                        // No dedicated thread available — use shared pool if present, else fallback inline
+                        if let Some(pool) = GIL_WORKER_POOL.get() {
+                            let task = PoolTask::HotSwap { behavior: b.clone(), ptr };
+                            let _ = pool.sender.send(task);
                         } else {
                             Python::with_gil(|py| unsafe {
                                 let new_obj = PyObject::from_owned_ptr(py, ptr as *mut pyo3::ffi::PyObject);
@@ -400,25 +535,15 @@ impl PyRuntime {
                             });
                         }
                     }
-                    crate::mailbox::Message::User(bytes) => {
-                        if release_gil {
-                            let b2 = b.clone();
-                            let bytes2 = bytes.clone();
-                            // run the Python callback in a blocking thread so we don't hold the GIL on the async worker
-                            let _ = tokio::task::spawn_blocking(move || {
-                                if unsafe { pyo3::ffi::Py_IsInitialized() } == 0 {
-                                    return;
-                                }
-                                Python::with_gil(|py| {
-                                    let guard = b2.read();
-                                    let cb = guard.as_ref(py);
-                                    let pybytes = PyBytes::new(py, &bytes2);
-                                    if let Err(e) = cb.call1((pybytes,)) {
-                                        eprintln!("[Myrmidon] Python actor exception: {}", e);
-                                        e.print(py);
-                                    }
-                                });
-                            }).await;
+                    crate::mailbox::Message::User(_) if tx.is_some() => {
+                        if let Some(tx) = tx {
+                            let _ = tx.send(msg);
+                        }
+                    }
+                    crate::mailbox::Message::User(bytes) if release_gil => {
+                        if let Some(pool) = GIL_WORKER_POOL.get() {
+                            let task = PoolTask::Execute { behavior: b.clone(), bytes: bytes.clone() };
+                            let _ = pool.sender.send(task);
                         } else {
                             Python::with_gil(|py| {
                                 let guard = b.read();
@@ -431,15 +556,35 @@ impl PyRuntime {
                             });
                         }
                     }
+                    // No dedicated thread: execute inline under the GIL.
+                    crate::mailbox::Message::System(crate::mailbox::SystemMessage::HotSwap(ptr)) => {
+                        Python::with_gil(|py| unsafe {
+                            let new_obj = PyObject::from_owned_ptr(py, ptr as *mut pyo3::ffi::PyObject);
+                            *b.write() = new_obj;
+                        });
+                    }
+                    crate::mailbox::Message::User(bytes) => {
+                        Python::with_gil(|py| {
+                            let guard = b.read();
+                            let cb = guard.as_ref(py);
+                            let pybytes = PyBytes::new(py, &bytes);
+                            if let Err(e) = cb.call1((pybytes,)) {
+                                eprintln!("[Myrmidon] Python actor exception: {}", e);
+                                e.print(py);
+                            }
+                        });
+                    }
                     crate::mailbox::Message::System(crate::mailbox::SystemMessage::Exit(pid)) => {
                         let _ = pid;
+                        // If we have a dedicated thread, dropping tx will cause it to exit.
+                        drop(tx);
                     }
-                    // Phase 7.1: Ignore low-level heartbeats in the Python actor loop
                     crate::mailbox::Message::System(crate::mailbox::SystemMessage::Ping) |
                     crate::mailbox::Message::System(crate::mailbox::SystemMessage::Pong) => {}
                 }
             }
         };
+
         Ok(self.inner.spawn_handler_with_budget(handler, budget))
     }
 
