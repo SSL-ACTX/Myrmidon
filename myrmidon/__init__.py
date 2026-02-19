@@ -11,14 +11,21 @@ class Runtime:
     def __init__(self):
         self._inner = PyRuntime()
 
-    def spawn(self, handler, budget: int = 100) -> int:
+    def spawn(self, handler, budget: int = 100, release_gil: bool = False) -> int:
         """
         Spawn a new push-based actor (Green Thread).
-        
+
         The handler must be a callable that accepts a single argument (the message).
         The actor will be called repeatedly for each incoming message.
+
+        Args:
+            handler: Callable(message)
+            budget: Reduction budget for cooperative scheduling.
+            release_gil: If True, the runtime will execute the Python callback
+                         in a blocking thread that acquires the GIL, avoiding
+                         holding the GIL on the async worker. Defaults to False.
         """
-        return self._inner.spawn_py_handler(handler, budget)
+        return self._inner.spawn_py_handler(handler, budget, release_gil)
 
     def spawn_with_mailbox(self, handler, budget: int = 100) -> int:
         """

@@ -318,6 +318,39 @@ Supported. Ensure you have the latest Microsoft C++ Build Tools installed for Py
 
 ---
 
+### Python example — toggling GIL release
+
+You can control whether push-based Python actors run their callbacks on a blocking thread
+that acquires the GIL (avoiding holding the GIL on the async worker) using the
+`release_gil` flag on `Runtime.spawn`:
+
+```python
+from myrmidon import Runtime
+import time
+
+rt = Runtime()
+
+def handler_no(msg):
+    print('no release', __import__('threading').get_ident())
+
+def handler_yes(msg):
+    print('release', __import__('threading').get_ident())
+
+pid_no = rt.spawn(handler_no, budget=10, release_gil=False)
+pid_yes = rt.spawn(handler_yes, budget=10, release_gil=True)
+
+rt.send(pid_no, b'ping')
+rt.send(pid_yes, b'ping')
+
+time.sleep(0.2)
+```
+
+When `release_gil=True` the handler runs inside a `spawn_blocking` worker that
+acquires the GIL; `release_gil=False` keeps the previous behavior (callback runs
+directly while holding the GIL on the async worker).
+
+---
+
 <div align="center">
 
 **Author:** Seuriin ([SSL-ACTX](https://www.google.com/search?q=https://github.com/SSL-ACTX))

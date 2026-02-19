@@ -365,11 +365,15 @@ impl PyRuntime {
 
     /// Spawns a push-based actor (original behavior).
     /// The `py_callable` is called with each message as an argument.
-    fn spawn_py_handler(&self, py_callable: PyObject, budget: usize) -> PyResult<u64> {
+    /// If `release_gil` is true, the Python callback and hot-swap are executed
+    /// in `tokio::task::spawn_blocking` so the actor's async loop doesn't hold the GIL.
+    fn spawn_py_handler(&self, py_callable: PyObject, budget: usize, release_gil: Option<bool>) -> PyResult<u64> {
+        let release = release_gil.unwrap_or(false);
         let behavior = Arc::new(parking_lot::RwLock::new(py_callable));
 
         let handler = move |msg: crate::mailbox::Message| {
             let b = behavior.clone();
+            let release_gil = release;
             async move {
                 if unsafe { pyo3::ffi::Py_IsInitialized() } == 0 {
                     return;
@@ -377,23 +381,55 @@ impl PyRuntime {
 
                 match msg {
                     crate::mailbox::Message::System(crate::mailbox::SystemMessage::HotSwap(ptr)) => {
-                        Python::with_gil(|py| {
-                            unsafe {
+                        if release_gil {
+                            let b2 = b.clone();
+                            // perform hot-swap inside a blocking thread that acquires the GIL
+                            let _ = tokio::task::spawn_blocking(move || {
+                                if unsafe { pyo3::ffi::Py_IsInitialized() } == 0 {
+                                    return;
+                                }
+                                Python::with_gil(|py| unsafe {
+                                    let new_obj = PyObject::from_owned_ptr(py, ptr as *mut pyo3::ffi::PyObject);
+                                    *b2.write() = new_obj;
+                                });
+                            }).await;
+                        } else {
+                            Python::with_gil(|py| unsafe {
                                 let new_obj = PyObject::from_owned_ptr(py, ptr as *mut pyo3::ffi::PyObject);
                                 *b.write() = new_obj;
-                            }
-                        });
+                            });
+                        }
                     }
                     crate::mailbox::Message::User(bytes) => {
-                        Python::with_gil(|py| {
-                            let guard = b.read();
-                            let cb = guard.as_ref(py);
-                            let pybytes = PyBytes::new(py, &bytes);
-                            if let Err(e) = cb.call1((pybytes,)) {
-                                eprintln!("[Myrmidon] Python actor exception: {}", e);
-                                e.print(py);
-                            }
-                        });
+                        if release_gil {
+                            let b2 = b.clone();
+                            let bytes2 = bytes.clone();
+                            // run the Python callback in a blocking thread so we don't hold the GIL on the async worker
+                            let _ = tokio::task::spawn_blocking(move || {
+                                if unsafe { pyo3::ffi::Py_IsInitialized() } == 0 {
+                                    return;
+                                }
+                                Python::with_gil(|py| {
+                                    let guard = b2.read();
+                                    let cb = guard.as_ref(py);
+                                    let pybytes = PyBytes::new(py, &bytes2);
+                                    if let Err(e) = cb.call1((pybytes,)) {
+                                        eprintln!("[Myrmidon] Python actor exception: {}", e);
+                                        e.print(py);
+                                    }
+                                });
+                            }).await;
+                        } else {
+                            Python::with_gil(|py| {
+                                let guard = b.read();
+                                let cb = guard.as_ref(py);
+                                let pybytes = PyBytes::new(py, &bytes);
+                                if let Err(e) = cb.call1((pybytes,)) {
+                                    eprintln!("[Myrmidon] Python actor exception: {}", e);
+                                    e.print(py);
+                                }
+                            });
+                        }
                     }
                     crate::mailbox::Message::System(crate::mailbox::SystemMessage::Exit(pid)) => {
                         let _ = pid;
