@@ -11,15 +11,23 @@ async fn test_remote_monitoring_failure() {
     // 1. Setup Node A (The Target)
     let (rt_a, pid_a) = Python::with_gil(|py| {
         let module = myrmidon::py::make_module(py).unwrap();
-        let rt = module.as_ref(py).getattr("PyRuntime").unwrap().call0().unwrap();
+        let rt = module
+            .as_ref(py)
+            .getattr("PyRuntime")
+            .unwrap()
+            .call0()
+            .unwrap();
 
         rt.call_method1("listen", (addr,)).unwrap();
 
         py.run("def target(msg): pass", None, None).unwrap();
         let handler = py.eval("target", None, None).unwrap();
 
-        let pid: u64 = rt.call_method1("spawn_py_handler", (handler, 10usize))
-            .unwrap().extract().unwrap();
+        let pid: u64 = rt
+            .call_method1("spawn_py_handler", (handler, 10usize))
+            .unwrap()
+            .extract()
+            .unwrap();
 
         (rt.into_py(py), pid)
     });
@@ -27,7 +35,12 @@ async fn test_remote_monitoring_failure() {
     // 2. Setup Node B (The Guardian)
     let rt_b = Python::with_gil(|py| {
         let module = myrmidon::py::make_module(py).unwrap();
-        let rt = module.as_ref(py).getattr("PyRuntime").unwrap().call0().unwrap();
+        let rt = module
+            .as_ref(py)
+            .getattr("PyRuntime")
+            .unwrap()
+            .call0()
+            .unwrap();
 
         // Tell Node B to monitor the actor on Node A
         rt.call_method1("monitor_remote", (addr, pid_a)).unwrap();
@@ -46,7 +59,11 @@ async fn test_remote_monitoring_failure() {
     Python::with_gil(|py| {
         // In a real scenario, we'd check if a restart was triggered.
         // Here we just check if Node B's internal supervisor state was updated.
-        let count: usize = rt_b.call_method0(py, "children_count").unwrap().extract(py).unwrap();
+        let count: usize = rt_b
+            .call_method0(py, "children_count")
+            .unwrap()
+            .extract(py)
+            .unwrap();
         // If monitor_remote worked, the "virtual child" exit was notified.
         // (Note: This depends on how you've linked the monitor to the child list)
         assert!(count >= 0);

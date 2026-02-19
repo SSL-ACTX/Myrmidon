@@ -20,7 +20,10 @@ pub struct SlabAllocator {
 impl SlabAllocator {
     /// Create an empty slab allocator.
     pub fn new() -> Self {
-        Self { entries: Vec::new(), free_list: Vec::new() }
+        Self {
+            entries: Vec::new(),
+            free_list: Vec::new(),
+        }
     }
 
     /// Allocate a new slot and return its `Pid`.
@@ -31,7 +34,10 @@ impl SlabAllocator {
             make_pid(idx, entry.generation)
         } else {
             let idx = self.entries.len();
-            self.entries.push(Entry { generation: 1, occupied: true });
+            self.entries.push(Entry {
+                generation: 1,
+                occupied: true,
+            });
             make_pid(idx, 1)
         }
     }
@@ -56,7 +62,9 @@ impl SlabAllocator {
     /// Check whether the pid currently refers to a live allocated slot.
     pub fn is_valid(&self, pid: Pid) -> bool {
         let (idx, gen) = split_pid(pid);
-        idx < self.entries.len() && self.entries[idx].occupied && self.entries[idx].generation == gen
+        idx < self.entries.len()
+            && self.entries[idx].occupied
+            && self.entries[idx].generation == gen
     }
 }
 

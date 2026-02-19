@@ -1,9 +1,9 @@
 // src/mailbox.rs
 //! Minimal mailbox implementation (unbounded, binary messages)
 
-use tokio::sync::mpsc;
 use bytes::Bytes;
 use std::collections::VecDeque;
+use tokio::sync::mpsc;
 
 /// Message is an envelope that can be either a user payload (binary blob)
 /// or a system message (e.g., exit notifications).

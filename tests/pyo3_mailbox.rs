@@ -12,9 +12,12 @@ async fn test_mailbox_actor_basic_recv() {
         let rt = module.getattr(py, "PyRuntime").unwrap().call0(py).unwrap();
         let locals = PyDict::new(py);
         locals.set_item("rt", rt.clone()).unwrap();
-        locals.set_item("__builtins__", py.import("builtins").unwrap()).unwrap();
+        locals
+            .set_item("__builtins__", py.import("builtins").unwrap())
+            .unwrap();
 
-        py.run(r#"
+        py.run(
+            r#"
 import time
 
 # A pull-based actor that reads from its mailbox.
@@ -39,9 +42,17 @@ rt.send(pid, b"second")
 
 # We just sleep the main thread to allow the background actor thread to finish.
 time.sleep(0.5)
-"#, Some(locals), Some(locals)).unwrap();
+"#,
+            Some(locals),
+            Some(locals),
+        )
+        .unwrap();
 
-        let results: Vec<Vec<u8>> = locals.get_item("results").expect("results global not set (actor failed?)").extract().unwrap();
+        let results: Vec<Vec<u8>> = locals
+            .get_item("results")
+            .expect("results global not set (actor failed?)")
+            .extract()
+            .unwrap();
         assert_eq!(results[0], b"first");
         assert_eq!(results[1], b"second");
     });
@@ -54,9 +65,12 @@ async fn test_mailbox_actor_selective_recv() {
         let rt = module.getattr(py, "PyRuntime").unwrap().call0(py).unwrap();
         let locals = PyDict::new(py);
         locals.set_item("rt", rt.clone()).unwrap();
-        locals.set_item("__builtins__", py.import("builtins").unwrap()).unwrap();
+        locals
+            .set_item("__builtins__", py.import("builtins").unwrap())
+            .unwrap();
 
-        py.run(r#"
+        py.run(
+            r#"
 import time
 
 def mailbox_actor(mailbox):
@@ -88,12 +102,20 @@ rt.send(pid, b"B")
 
 # Allow time for threaded execution
 time.sleep(0.5)
-"#, Some(locals), Some(locals)).unwrap();
+"#,
+            Some(locals),
+            Some(locals),
+        )
+        .unwrap();
 
-        let results: Vec<Vec<u8>> = locals.get_item("results").expect("results global not set").extract().unwrap();
+        let results: Vec<Vec<u8>> = locals
+            .get_item("results")
+            .expect("results global not set")
+            .extract()
+            .unwrap();
         assert_eq!(results[0], b"target"); // Selective
-        assert_eq!(results[1], b"A");      // Deferred
-        assert_eq!(results[2], b"B");      // Normal flow
+        assert_eq!(results[1], b"A"); // Deferred
+        assert_eq!(results[2], b"B"); // Normal flow
     });
 }
 
@@ -104,9 +126,12 @@ async fn test_mailbox_actor_timeout() {
         let rt = module.getattr(py, "PyRuntime").unwrap().call0(py).unwrap();
         let locals = PyDict::new(py);
         locals.set_item("rt", rt.clone()).unwrap();
-        locals.set_item("__builtins__", py.import("builtins").unwrap()).unwrap();
+        locals
+            .set_item("__builtins__", py.import("builtins").unwrap())
+            .unwrap();
 
-        py.run(r#"
+        py.run(
+            r#"
 import time
 
 def mailbox_actor(mailbox):
@@ -123,7 +148,11 @@ pid = rt.spawn_with_mailbox(mailbox_actor, 100)
 
 # Allow time for execution
 time.sleep(0.5)
-"#, Some(locals), Some(locals)).unwrap();
+"#,
+            Some(locals),
+            Some(locals),
+        )
+        .unwrap();
 
         let result = locals.get_item("result").expect("result global not set");
         assert!(result.is_none());

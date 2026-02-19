@@ -2,7 +2,7 @@
 #![cfg(feature = "pyo3")]
 
 use pyo3::prelude::*;
-use pyo3::types::{PyList, PyDict};
+use pyo3::types::{PyDict, PyList};
 use std::time::Duration;
 
 #[tokio::test]
@@ -23,13 +23,19 @@ async fn test_distributed_messaging() {
         rt.call_method1("listen", (addr,)).unwrap();
 
         // Spawn handler that records received messages
-        py.run(r#"
+        py.run(
+            r#"
 def remote_handler(msg, results=results):
     results.append(msg.decode())
-"#, None, Some(locals)).unwrap();
+"#,
+            None,
+            Some(locals),
+        )
+        .unwrap();
 
         let handler = locals.get_item("remote_handler").unwrap();
-        let pid: u64 = rt.call_method1("spawn_py_handler", (handler, 10usize))
+        let pid: u64 = rt
+            .call_method1("spawn_py_handler", (handler, 10usize))
             .unwrap()
             .extract()
             .unwrap();
@@ -48,18 +54,22 @@ def remote_handler(msg, results=results):
 
         let payload = pyo3::types::PyBytes::new(py, b"Hello from Node B");
         // Send to Node A's address and PID
-        rt_b.call_method1("send_remote", (addr, pid_a, payload)).unwrap();
+        rt_b.call_method1("send_remote", (addr, pid_a, payload))
+            .unwrap();
     });
 
     // 3. Verification: Did it arrive on Node A?
     let mut success = false;
-    for _ in 0..20 { // Poll for up to 1 second
+    for _ in 0..20 {
+        // Poll for up to 1 second
         tokio::time::sleep(Duration::from_millis(50)).await;
         success = Python::with_gil(|py| {
             let res: Vec<String> = results.extract(py).unwrap();
             res.contains(&"Hello from Node B".to_string())
         });
-        if success { break; }
+        if success {
+            break;
+        }
     }
 
     assert!(success, "Remote message never arrived at Node A");

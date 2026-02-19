@@ -1,13 +1,13 @@
 // src/node.rs
 #![cfg(feature = "node")]
 
+use crate::mailbox::{Message, SystemMessage};
 use napi::bindgen_prelude::*;
 use napi::threadsafe_function::{ErrorStrategy, ThreadsafeFunction, ThreadsafeFunctionCallMode};
-use napi::{JsFunction, JsUnknown, Result, JsObject};
+use napi::{JsFunction, JsObject, JsUnknown, Result};
 use napi_derive::napi;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use crate::mailbox::{Message, SystemMessage};
 
 /// --- System Message Wrapper ---
 
@@ -38,7 +38,7 @@ fn message_to_js(env: &Env, msg: Message) -> Result<JsUnknown> {
             if let Some(pid) = target_pid {
                 obj.set_named_property("targetPid", pid)?;
             }
-            
+
             Ok(obj.into_unknown())
         }
     }
@@ -58,7 +58,7 @@ impl JsMailbox {
     #[napi]
     pub async fn recv(&self, timeout_sec: Option<f64>) -> Result<Option<WrappedMessage>> {
         let rx = self.inner.clone();
-        
+
         let fut = async move {
             let mut guard = rx.lock().await;
             guard.recv().await
@@ -94,7 +94,7 @@ impl From<Message> for WrappedMessage {
                 system: None,
             },
             Message::System(sys) => {
-                 let (type_name, target_pid) = match sys {
+                let (type_name, target_pid) = match sys {
                     SystemMessage::Exit(pid) => ("EXIT".to_string(), Some(pid as i64)),
                     SystemMessage::HotSwap(_) => ("HOT_SWAP".to_string(), None),
                     SystemMessage::Ping => ("PING".to_string(), None),
@@ -102,7 +102,10 @@ impl From<Message> for WrappedMessage {
                 };
                 WrappedMessage {
                     data: None,
-                    system: Some(JsSystemMessage { type_name, target_pid }),
+                    system: Some(JsSystemMessage {
+                        type_name,
+                        target_pid,
+                    }),
                 }
             }
         }
@@ -120,7 +123,9 @@ pub struct NodeRuntime {
 impl NodeRuntime {
     #[napi(constructor)]
     pub fn new() -> Self {
-        Self { inner: Arc::new(crate::Runtime::new()) }
+        Self {
+            inner: Arc::new(crate::Runtime::new()),
+        }
     }
 
     // --- Core Spawning & Messaging ---
@@ -128,7 +133,7 @@ impl NodeRuntime {
     #[napi]
     pub fn spawn(&self, handler: JsFunction, budget: Option<u32>) -> Result<i64> {
         let budget = budget.unwrap_or(100) as usize;
-        
+
         // Create TSFN for the handler
         let tsfn: ThreadsafeFunction<Message, ErrorStrategy::Fatal> = handler
             .create_threadsafe_function(0, |ctx| {
@@ -141,51 +146,59 @@ impl NodeRuntime {
         // We wrap TSFN in a Send-safe container manually because TSFN is Send, but raw pointers are not.
         let behavior = Arc::new(parking_lot::RwLock::new(tsfn));
 
-        let pid = self.inner.spawn_handler_with_budget(move |msg| {
-            let b = behavior.clone();
-            async move {
-                // Check for Hot Swap system message
-                if let Message::System(SystemMessage::HotSwap(ptr)) = msg {
-                    unsafe {
-                        // Reconstruct TSFN from raw pointer.
-                        // We must ensure this pointer was created via Box::into_raw(Box::new(tsfn))
-                        let new_tsfn_box = Box::from_raw(ptr as *mut ThreadsafeFunction<Message, ErrorStrategy::Fatal>);
-                        let mut guard = b.write();
-                        *guard = *new_tsfn_box;
+        let pid = self.inner.spawn_handler_with_budget(
+            move |msg| {
+                let b = behavior.clone();
+                async move {
+                    // Check for Hot Swap system message
+                    if let Message::System(SystemMessage::HotSwap(ptr)) = msg {
+                        unsafe {
+                            // Reconstruct TSFN from raw pointer.
+                            // We must ensure this pointer was created via Box::into_raw(Box::new(tsfn))
+                            let new_tsfn_box = Box::from_raw(
+                                ptr as *mut ThreadsafeFunction<Message, ErrorStrategy::Fatal>,
+                            );
+                            let mut guard = b.write();
+                            *guard = *new_tsfn_box;
+                        }
+                        return;
                     }
-                    return;
-                }
 
-                // Normal execution
-                let guard = b.read();
-                guard.call(msg, ThreadsafeFunctionCallMode::NonBlocking);
-            }
-        }, budget);
+                    // Normal execution
+                    let guard = b.read();
+                    guard.call(msg, ThreadsafeFunctionCallMode::NonBlocking);
+                }
+            },
+            budget,
+        );
 
         Ok(pid as i64)
     }
 
     #[napi]
     pub fn spawn_with_mailbox(&self, handler: JsFunction, budget: Option<u32>) -> Result<i64> {
-         let budget = budget.unwrap_or(100) as usize;
-         
-         let tsfn: ThreadsafeFunction<JsMailbox, ErrorStrategy::Fatal> = handler
-            .create_threadsafe_function(0, |ctx| {
-                Ok(vec![ctx.value])
-            })?;
+        let budget = budget.unwrap_or(100) as usize;
 
-        let pid = self.inner.spawn_actor_with_budget(move |rx| async move {
-            let mailbox = JsMailbox { inner: Arc::new(Mutex::new(rx)) };
-            tsfn.call(mailbox.clone(), ThreadsafeFunctionCallMode::NonBlocking);
-            
-            // Keep actor alive until mailbox is dropped by JS
-            loop {
-                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                if Arc::strong_count(&mailbox.inner) <= 1 {
-                    break;
+        let tsfn: ThreadsafeFunction<JsMailbox, ErrorStrategy::Fatal> =
+            handler.create_threadsafe_function(0, |ctx| Ok(vec![ctx.value]))?;
+
+        let pid = self.inner.spawn_actor_with_budget(
+            move |rx| async move {
+                let mailbox = JsMailbox {
+                    inner: Arc::new(Mutex::new(rx)),
+                };
+                tsfn.call(mailbox.clone(), ThreadsafeFunctionCallMode::NonBlocking);
+
+                // Keep actor alive until mailbox is dropped by JS
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                    if Arc::strong_count(&mailbox.inner) <= 1 {
+                        break;
+                    }
                 }
-            }
-        }, budget);
+            },
+            budget,
+        );
 
         Ok(pid as i64)
     }
@@ -216,7 +229,10 @@ impl NodeRuntime {
 
     #[napi]
     pub async fn resolve_remote(&self, addr: String, name: String) -> Option<i64> {
-        self.inner.resolve_remote_async(addr, name).await.map(|p| p as i64)
+        self.inner
+            .resolve_remote_async(addr, name)
+            .await
+            .map(|p| p as i64)
     }
 
     #[napi]
@@ -226,9 +242,10 @@ impl NodeRuntime {
 
     #[napi]
     pub fn send_remote(&self, addr: String, pid: i64, data: Buffer) {
-        self.inner.send_remote(addr, pid as u64, bytes::Bytes::from(data.to_vec()));
+        self.inner
+            .send_remote(addr, pid as u64, bytes::Bytes::from(data.to_vec()));
     }
-    
+
     #[napi]
     pub fn monitor_remote(&self, addr: String, pid: i64) {
         self.inner.monitor_remote(addr, pid as u64);
@@ -236,7 +253,7 @@ impl NodeRuntime {
 
     #[napi]
     pub async fn is_node_up(&self, addr: String) -> bool {
-         tokio::net::TcpStream::connect(addr).await.is_ok()
+        tokio::net::TcpStream::connect(addr).await.is_ok()
     }
 
     // --- Lifecycle & Cluster Management ---
@@ -252,7 +269,7 @@ impl NodeRuntime {
         let rt = self.inner.clone();
         let pid_u64 = pid as u64;
         let wait_loop = async move {
-             while rt.is_alive(pid_u64) {
+            while rt.is_alive(pid_u64) {
                 tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             }
         };
@@ -271,7 +288,12 @@ impl NodeRuntime {
 
     #[napi]
     pub fn child_pids(&self) -> Vec<i64> {
-        self.inner.supervisor().child_pids().into_iter().map(|p| p as i64).collect()
+        self.inner
+            .supervisor()
+            .child_pids()
+            .into_iter()
+            .map(|p| p as i64)
+            .collect()
     }
 
     // --- Hot Swap ---
@@ -288,7 +310,7 @@ impl NodeRuntime {
 
         // Convert TSFN to a raw pointer to pass through the mailbox
         let ptr = Box::into_raw(Box::new(tsfn));
-        
+
         // Send the HotSwap system message
         self.inner.hot_swap(pid as u64, ptr as usize);
         Ok(())
@@ -305,8 +327,8 @@ impl NodeRuntime {
     #[napi]
     pub fn get_messages(&self, pid: i64) -> Result<Vec<WrappedMessage>> {
         if let Some(msgs) = self.inner.get_observed_messages(pid as u64) {
-             let wrapped = msgs.into_iter().map(WrappedMessage::from).collect();
-             Ok(wrapped)
+            let wrapped = msgs.into_iter().map(WrappedMessage::from).collect();
+            Ok(wrapped)
         } else {
             Ok(Vec::new())
         }
@@ -316,17 +338,25 @@ impl NodeRuntime {
 
     #[napi]
     pub fn watch(&self, pid: i64, strategy: String) -> Result<()> {
-        use crate::supervisor::RestartStrategy;
         use crate::supervisor::ChildSpec;
+        use crate::supervisor::RestartStrategy;
 
         let strat = match strategy.to_lowercase().as_str() {
             "restartone" | "restart_one" | "one" => RestartStrategy::RestartOne,
             "restartall" | "restart_all" | "all" => RestartStrategy::RestartAll,
-            _ => return Err(Error::new(Status::InvalidArg, "Invalid strategy".to_owned())),
+            _ => {
+                return Err(Error::new(
+                    Status::InvalidArg,
+                    "Invalid strategy".to_owned(),
+                ))
+            }
         };
 
         let pid_u64 = pid as u64;
-        let spec = ChildSpec { factory: Arc::new(move || Ok(pid_u64)), strategy: strat };
+        let spec = ChildSpec {
+            factory: Arc::new(move || Ok(pid_u64)),
+            strategy: strat,
+        };
         self.inner.supervisor().add_child(pid_u64, spec);
         Ok(())
     }

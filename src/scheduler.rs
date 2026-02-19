@@ -20,7 +20,11 @@ where
     pub fn new(inner: F, budget: usize) -> Self {
         // enforce a minimum budget of 1 to avoid degenerate behavior
         let budget = if budget == 0 { 1 } else { budget };
-        Self { inner, budget, polled: 0 }
+        Self {
+            inner,
+            budget,
+            polled: 0,
+        }
     }
 }
 
@@ -54,14 +58,15 @@ impl<F: Unpin> Unpin for ReductionLimiter<F> {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures::task::noop_waker_ref;
     use std::pin::Pin;
     use std::task::{Context, Poll};
-    use futures::task::noop_waker_ref;
 
     // Basic compile-time test that the wrapper can be used in an async context.
     #[tokio::test]
     async fn limiter_allows_completion() {
-        async fn fast() { /* no-op */ }
+        async fn fast() { /* no-op */
+        }
         let fut = ReductionLimiter::new(fast(), 10);
         fut.await;
     }
@@ -70,7 +75,9 @@ mod tests {
     // reached and still allows the inner future to complete eventually.
     #[test]
     fn limiter_forces_pending_before_ready() {
-        struct Inner { polls_left: usize }
+        struct Inner {
+            polls_left: usize,
+        }
         impl std::future::Future for Inner {
             type Output = &'static str;
             fn poll(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
@@ -103,11 +110,16 @@ mod tests {
         let mut completed = false;
         for _ in 0..10 {
             match pinned.as_mut().poll(&mut cx) {
-                Poll::Ready(_) => { completed = true; break; }
+                Poll::Ready(_) => {
+                    completed = true;
+                    break;
+                }
                 Poll::Pending => continue,
             }
         }
-        assert!(completed, "inner future did not complete within expected polls");
+        assert!(
+            completed,
+            "inner future did not complete within expected polls"
+        );
     }
 }
-

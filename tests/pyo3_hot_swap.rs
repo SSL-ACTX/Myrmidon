@@ -2,46 +2,61 @@
 #![cfg(feature = "pyo3")]
 
 use pyo3::prelude::*;
-use pyo3::types::{PyList, PyDict};
+use pyo3::types::{PyDict, PyList};
 use std::time::Duration;
 
 #[tokio::test]
 async fn test_hot_swap_flow() {
     // 1. Setup: Create Runtime and shared results list
-    let (rt, pid, results, handler_b): (PyObject, u64, PyObject, PyObject) = Python::with_gil(|py| {
-        let module = myrmidon::py::make_module(py).expect("make_module");
-        let runtime_type = module.as_ref(py).getattr("PyRuntime").expect("no PyRuntime type");
-        let rt = runtime_type.call0().expect("construct PyRuntime");
+    let (rt, pid, results, handler_b): (PyObject, u64, PyObject, PyObject) =
+        Python::with_gil(|py| {
+            let module = myrmidon::py::make_module(py).expect("make_module");
+            let runtime_type = module
+                .as_ref(py)
+                .getattr("PyRuntime")
+                .expect("no PyRuntime type");
+            let rt = runtime_type.call0().expect("construct PyRuntime");
 
-        // A shared list to capture output from the actor
-        let results = PyList::empty(py);
+            // A shared list to capture output from the actor
+            let results = PyList::empty(py);
 
-        // Define two different behaviors in the Python environment
-        let locals = PyDict::new(py);
-        locals.set_item("results", results).unwrap();
+            // Define two different behaviors in the Python environment
+            let locals = PyDict::new(py);
+            locals.set_item("results", results).unwrap();
 
-        // [FIX] We bind 'results=results' in the function definition.
-        // This ensures the function object captures the specific 'results' list
-        // at definition time, preventing NameErrors when running in background threads.
-        py.run(r#"
+            // [FIX] We bind 'results=results' in the function definition.
+            // This ensures the function object captures the specific 'results' list
+            // at definition time, preventing NameErrors when running in background threads.
+            py.run(
+                r#"
 def handler_a(msg, results=results):
     results.append(f"A:{msg.decode()}")
 
 def handler_b(msg, results=results):
     results.append(f"B:{msg.decode()}")
-"#, None, Some(locals)).unwrap();
-
-        let handler_a = locals.get_item("handler_a").unwrap();
-        let handler_b = locals.get_item("handler_b").unwrap();
-
-        // Spawn the actor with Behavior A
-        let pid: u64 = rt.call_method1("spawn_py_handler", (handler_a, 10usize))
-            .unwrap()
-            .extract()
+"#,
+                None,
+                Some(locals),
+            )
             .unwrap();
 
-        (rt.into_py(py), pid, results.into_py(py), handler_b.into_py(py))
-    });
+            let handler_a = locals.get_item("handler_a").unwrap();
+            let handler_b = locals.get_item("handler_b").unwrap();
+
+            // Spawn the actor with Behavior A
+            let pid: u64 = rt
+                .call_method1("spawn_py_handler", (handler_a, 10usize))
+                .unwrap()
+                .extract()
+                .unwrap();
+
+            (
+                rt.into_py(py),
+                pid,
+                results.into_py(py),
+                handler_b.into_py(py),
+            )
+        });
 
     // 2. Execution: Send message to Behavior A
     Python::with_gil(|py| {

@@ -1,2 +1,3 @@
+
 max_width = 100
-indent_style = "Spaces"
+hard_tabs = false

@@ -3,10 +3,10 @@
 
 use crate::mailbox::Message;
 use crate::pid::Pid;
-use bytes::{Bytes, BytesMut, Buf, BufMut};
+use bytes::{Buf, BufMut, Bytes, BytesMut};
 use std::sync::Arc;
-use tokio::net::{TcpListener, TcpStream};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
 use tokio::time::{interval, Duration};
 
 pub struct NetworkManager {
@@ -30,29 +30,44 @@ impl NetworkManager {
                     let mut head = [0u8; 1];
                     while socket.read_exact(&mut head).await.is_ok() {
                         match head[0] {
-                            0 => { // User Message: [PID:u64][LEN:u32][DATA]
+                            0 => {
+                                // User Message: [PID:u64][LEN:u32][DATA]
                                 let mut meta = [0u8; 12];
-                                if socket.read_exact(&mut meta).await.is_err() { break; }
+                                if socket.read_exact(&mut meta).await.is_err() {
+                                    break;
+                                }
                                 let mut cursor = std::io::Cursor::new(&meta);
                                 let pid = cursor.get_u64();
                                 let len = cursor.get_u32() as usize;
                                 let mut data = vec![0u8; len];
-                                if socket.read_exact(&mut data).await.is_err() { break; }
+                                if socket.read_exact(&mut data).await.is_err() {
+                                    break;
+                                }
                                 let _ = rt_inner.send(pid, Message::User(Bytes::from(data)));
                             }
-                            1 => { // Resolve Request: [LEN:u32][NAME:String] -> [PID:u64]
+                            1 => {
+                                // Resolve Request: [LEN:u32][NAME:String] -> [PID:u64]
                                 let mut len_buf = [0u8; 4];
-                                if socket.read_exact(&mut len_buf).await.is_err() { break; }
+                                if socket.read_exact(&mut len_buf).await.is_err() {
+                                    break;
+                                }
                                 let len = u32::from_be_bytes(len_buf) as usize;
                                 let mut name_vec = vec![0u8; len];
-                                if socket.read_exact(&mut name_vec).await.is_err() { break; }
+                                if socket.read_exact(&mut name_vec).await.is_err() {
+                                    break;
+                                }
                                 let name = String::from_utf8_lossy(&name_vec);
 
                                 let pid = rt_inner.resolve(&name).unwrap_or(0);
-                                if socket.write_all(&pid.to_be_bytes()).await.is_err() { break; }
+                                if socket.write_all(&pid.to_be_bytes()).await.is_err() {
+                                    break;
+                                }
                             }
-                            2 => { // Heartbeat (Ping) -> Returns 0x03 (Pong)
-                                if socket.write_all(&[3u8]).await.is_err() { break; }
+                            2 => {
+                                // Heartbeat (Ping) -> Returns 0x03 (Pong)
+                                if socket.write_all(&[3u8]).await.is_err() {
+                                    break;
+                                }
                             }
                             _ => break,
                         }
@@ -68,7 +83,9 @@ impl NetworkManager {
         let mut stream = TcpStream::connect(addr).await?;
         stream.write_all(&[1u8]).await?; // Type 1: Resolve
         let name_bytes = name.as_bytes();
-        stream.write_all(&(name_bytes.len() as u32).to_be_bytes()).await?;
+        stream
+            .write_all(&(name_bytes.len() as u32).to_be_bytes())
+            .await?;
         stream.write_all(name_bytes).await?;
 
         let mut pid_buf = [0u8; 8];

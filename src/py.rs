@@ -3,20 +3,20 @@
 //! Optimized for asynchronous service discovery and structured system messages.
 #![allow(non_local_definitions)]
 
+use crate::buffer::{global_registry, BufferId};
+use crossbeam_channel as cb_channel;
 #[cfg(feature = "pyo3")]
 use pyo3::prelude::*;
+use pyo3::types::{PyBytes, PyTuple};
 #[cfg(feature = "pyo3")]
 use pyo3::wrap_pyfunction;
-use std::os::raw::{c_void, c_char};
-use pyo3::types::{PyTuple, PyBytes};
 use pyo3::PyObject;
-use crate::buffer::{global_registry, BufferId};
+use std::os::raw::{c_char, c_void};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::time::Duration;
 use tokio::sync::Mutex as TokioMutex;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::OnceLock;
-use crossbeam_channel as cb_channel;
 
 #[cfg(feature = "pyo3")]
 use pyo3_asyncio::tokio::future_into_py;
@@ -39,7 +39,9 @@ fn populate_module(m: &PyModule) -> PyResult<()> {
 }
 
 extern "C" fn capsule_destructor(capsule: *mut pyo3::ffi::PyObject) {
-    if capsule.is_null() { return; }
+    if capsule.is_null() {
+        return;
+    }
     unsafe {
         let ptr = pyo3::ffi::PyCapsule_GetPointer(capsule, std::ptr::null());
         if !ptr.is_null() {
@@ -54,21 +56,35 @@ extern "C" fn capsule_destructor(capsule: *mut pyo3::ffi::PyObject) {
 #[pyfunction]
 fn allocate_buffer(py: Python, size: usize) -> PyResult<PyObject> {
     let id = global_registry().allocate(size);
-    let (ptr, len) = global_registry().ptr_len(id).ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err("failed to allocate"))?;
+    let (ptr, len) = global_registry()
+        .ptr_len(id)
+        .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err("failed to allocate"))?;
 
     unsafe {
-        let mv = pyo3::ffi::PyMemoryView_FromMemory(ptr as *mut c_char, len as isize, pyo3::ffi::PyBUF_WRITE);
+        let mv = pyo3::ffi::PyMemoryView_FromMemory(
+            ptr as *mut c_char,
+            len as isize,
+            pyo3::ffi::PyBUF_WRITE,
+        );
         if mv.is_null() {
             global_registry().free(id);
-            return Err(pyo3::exceptions::PyRuntimeError::new_err("failed to create memoryview"));
+            return Err(pyo3::exceptions::PyRuntimeError::new_err(
+                "failed to create memoryview",
+            ));
         }
 
         let boxed = Box::new(id);
-        let capsule = pyo3::ffi::PyCapsule_New(Box::into_raw(boxed) as *mut c_void, std::ptr::null(), Some(capsule_destructor));
+        let capsule = pyo3::ffi::PyCapsule_New(
+            Box::into_raw(boxed) as *mut c_void,
+            std::ptr::null(),
+            Some(capsule_destructor),
+        );
         if capsule.is_null() {
             pyo3::ffi::Py_DecRef(mv as *mut pyo3::ffi::PyObject);
             global_registry().free(id);
-            return Err(pyo3::exceptions::PyRuntimeError::new_err("failed to create capsule"));
+            return Err(pyo3::exceptions::PyRuntimeError::new_err(
+                "failed to create capsule",
+            ));
         }
 
         let memobj = PyObject::from_owned_ptr(py, mv as *mut pyo3::ffi::PyObject);
@@ -93,58 +109,81 @@ fn message_to_py(py: Python, msg: crate::mailbox::Message) -> PyObject {
     match msg {
         crate::mailbox::Message::User(b) => PyBytes::new(py, &b).into_py(py),
         crate::mailbox::Message::System(crate::mailbox::SystemMessage::Exit(target)) => {
-            PySystemMessage { type_name: "EXIT".to_string(), target_pid: Some(target) }.into_py(py)
+            PySystemMessage {
+                type_name: "EXIT".to_string(),
+                target_pid: Some(target),
+            }
+            .into_py(py)
         }
-        crate::mailbox::Message::System(crate::mailbox::SystemMessage::HotSwap(_)) =>
-            PySystemMessage { type_name: "HOT_SWAP".to_string(), target_pid: None }.into_py(py),
-        crate::mailbox::Message::System(crate::mailbox::SystemMessage::Ping) =>
-            PySystemMessage { type_name: "PING".to_string(), target_pid: None }.into_py(py),
-        crate::mailbox::Message::System(crate::mailbox::SystemMessage::Pong) =>
-            PySystemMessage { type_name: "PONG".to_string(), target_pid: None }.into_py(py),
+        crate::mailbox::Message::System(crate::mailbox::SystemMessage::HotSwap(_)) => {
+            PySystemMessage {
+                type_name: "HOT_SWAP".to_string(),
+                target_pid: None,
+            }
+            .into_py(py)
+        }
+        crate::mailbox::Message::System(crate::mailbox::SystemMessage::Ping) => PySystemMessage {
+            type_name: "PING".to_string(),
+            target_pid: None,
+        }
+        .into_py(py),
+        crate::mailbox::Message::System(crate::mailbox::SystemMessage::Pong) => PySystemMessage {
+            type_name: "PONG".to_string(),
+            target_pid: None,
+        }
+        .into_py(py),
     }
 }
 
 /// Run a Python matcher against a Rust message.
 fn run_python_matcher(py: Python, matcher: &PyObject, msg: &crate::mailbox::Message) -> bool {
     match msg {
-        crate::mailbox::Message::User(b) => {
-            match matcher.call1(py, (PyBytes::new(py, &b),)) {
-                Ok(val) => val.extract::<bool>(py).unwrap_or(false),
-                Err(_) => false,
-            }
-        }
-        crate::mailbox::Message::System(s) => {
-            match s {
-                crate::mailbox::SystemMessage::Exit(target) => {
-                    let obj = PySystemMessage { type_name: "EXIT".to_string(), target_pid: Some(*target) };
-                    match matcher.call1(py, (obj.into_py(py),)) {
-                        Ok(val) => val.extract::<bool>(py).unwrap_or(false),
-                        Err(_) => false,
-                    }
-                }
-                crate::mailbox::SystemMessage::HotSwap(_) => {
-                    let obj = PySystemMessage { type_name: "HOT_SWAP".to_string(), target_pid: None };
-                    match matcher.call1(py, (obj.into_py(py),)) {
-                        Ok(val) => val.extract::<bool>(py).unwrap_or(false),
-                        Err(_) => false,
-                    }
-                }
-                crate::mailbox::SystemMessage::Ping => {
-                    let obj = PySystemMessage { type_name: "PING".to_string(), target_pid: None };
-                    match matcher.call1(py, (obj.into_py(py),)) {
-                        Ok(val) => val.extract::<bool>(py).unwrap_or(false),
-                        Err(_) => false,
-                    }
-                }
-                crate::mailbox::SystemMessage::Pong => {
-                    let obj = PySystemMessage { type_name: "PONG".to_string(), target_pid: None };
-                    match matcher.call1(py, (obj.into_py(py),)) {
-                        Ok(val) => val.extract::<bool>(py).unwrap_or(false),
-                        Err(_) => false,
-                    }
+        crate::mailbox::Message::User(b) => match matcher.call1(py, (PyBytes::new(py, &b),)) {
+            Ok(val) => val.extract::<bool>(py).unwrap_or(false),
+            Err(_) => false,
+        },
+        crate::mailbox::Message::System(s) => match s {
+            crate::mailbox::SystemMessage::Exit(target) => {
+                let obj = PySystemMessage {
+                    type_name: "EXIT".to_string(),
+                    target_pid: Some(*target),
+                };
+                match matcher.call1(py, (obj.into_py(py),)) {
+                    Ok(val) => val.extract::<bool>(py).unwrap_or(false),
+                    Err(_) => false,
                 }
             }
-        }
+            crate::mailbox::SystemMessage::HotSwap(_) => {
+                let obj = PySystemMessage {
+                    type_name: "HOT_SWAP".to_string(),
+                    target_pid: None,
+                };
+                match matcher.call1(py, (obj.into_py(py),)) {
+                    Ok(val) => val.extract::<bool>(py).unwrap_or(false),
+                    Err(_) => false,
+                }
+            }
+            crate::mailbox::SystemMessage::Ping => {
+                let obj = PySystemMessage {
+                    type_name: "PING".to_string(),
+                    target_pid: None,
+                };
+                match matcher.call1(py, (obj.into_py(py),)) {
+                    Ok(val) => val.extract::<bool>(py).unwrap_or(false),
+                    Err(_) => false,
+                }
+            }
+            crate::mailbox::SystemMessage::Pong => {
+                let obj = PySystemMessage {
+                    type_name: "PONG".to_string(),
+                    target_pid: None,
+                };
+                match matcher.call1(py, (obj.into_py(py),)) {
+                    Ok(val) => val.extract::<bool>(py).unwrap_or(false),
+                    Err(_) => false,
+                }
+            }
+        },
     }
 }
 
@@ -162,11 +201,11 @@ impl PyMailbox {
     /// Releases the GIL while waiting.
     fn recv(&self, py: Python, timeout: Option<f64>) -> PyResult<PyObject> {
         let rx = self.inner.clone();
-        
+
         // Release GIL to allow other threads to run while we block on the channel
         py.allow_threads(move || {
             let rt = tokio::runtime::Handle::current();
-            
+
             // We are likely in a dedicated blocking thread, so we block_on the async work.
             let fut = async {
                 let mut guard = rx.lock().await;
@@ -185,28 +224,33 @@ impl PyMailbox {
             };
 
             // Re-acquire GIL to return result
-            Python::with_gil(|py| {
-                match res {
-                    Some(msg) => Ok(message_to_py(py, msg)),
-                    None => Ok(py.None()),
-                }
+            Python::with_gil(|py| match res {
+                Some(msg) => Ok(message_to_py(py, msg)),
+                None => Ok(py.None()),
             })
         })
     }
 
     /// Selectively receive a message matching a Python predicate (Blocking).
     /// Releases the GIL while waiting.
-    fn selective_recv(&self, py: Python, matcher: PyObject, timeout: Option<f64>) -> PyResult<PyObject> {
+    fn selective_recv(
+        &self,
+        py: Python,
+        matcher: PyObject,
+        timeout: Option<f64>,
+    ) -> PyResult<PyObject> {
         let rx = self.inner.clone();
 
         py.allow_threads(move || {
             let rt = tokio::runtime::Handle::current();
-            
+
             let fut = async {
                 let mut guard = rx.lock().await;
-                guard.selective_recv(|msg| {
-                    Python::with_gil(|py| run_python_matcher(py, &matcher, msg))
-                }).await
+                guard
+                    .selective_recv(|msg| {
+                        Python::with_gil(|py| run_python_matcher(py, &matcher, msg))
+                    })
+                    .await
             };
 
             let res = if let Some(sec) = timeout {
@@ -220,16 +264,13 @@ impl PyMailbox {
                 rt.block_on(fut)
             };
 
-            Python::with_gil(|py| {
-                match res {
-                    Some(msg) => Ok(message_to_py(py, msg)),
-                    None => Ok(py.None()),
-                }
+            Python::with_gil(|py| match res {
+                Some(msg) => Ok(message_to_py(py, msg)),
+                None => Ok(py.None()),
             })
         })
     }
 }
-
 
 #[pyclass]
 struct PyRuntime {
@@ -240,7 +281,9 @@ struct PyRuntime {
 impl PyRuntime {
     #[new]
     fn new() -> Self {
-        Self { inner: std::sync::Arc::new(crate::Runtime::new()) }
+        Self {
+            inner: std::sync::Arc::new(crate::Runtime::new()),
+        }
     }
 
     // --- Phase 6: Name Registry ---
@@ -288,7 +331,12 @@ impl PyRuntime {
 
     /// Phase 7: Resolve a name on a remote node (Asynchronous).
     /// Returns a Python Awaitable (Future) for use in asyncio loops.
-    fn resolve_remote_py<'py>(&self, py: Python<'py>, addr: String, name: String) -> PyResult<&'py PyAny> {
+    fn resolve_remote_py<'py>(
+        &self,
+        py: Python<'py>,
+        addr: String,
+        name: String,
+    ) -> PyResult<&'py PyAny> {
         let rt = self.inner.clone();
         future_into_py(py, async move {
             let pid = rt.resolve_remote_async(addr, name).await;
@@ -339,9 +387,7 @@ impl PyRuntime {
 
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             // Must use block_in_place to prevent "runtime within runtime" panic
-            Ok(tokio::task::block_in_place(|| {
-                handle.block_on(fut)
-            }))
+            Ok(tokio::task::block_in_place(|| handle.block_on(fut)))
         } else {
             Ok(crate::RUNTIME.block_on(fut))
         }
@@ -372,9 +418,14 @@ impl PyRuntime {
     fn send_buffer(&self, pid: u64, buffer_id: u64) -> PyResult<bool> {
         if let Some(vec) = crate::buffer::global_registry().take(buffer_id) {
             let b = bytes::Bytes::from(vec);
-            Ok(self.inner.send(pid, crate::mailbox::Message::User(b)).is_ok())
+            Ok(self
+                .inner
+                .send(pid, crate::mailbox::Message::User(b))
+                .is_ok())
         } else {
-            Err(pyo3::exceptions::PyValueError::new_err("invalid buffer id or already taken"))
+            Err(pyo3::exceptions::PyValueError::new_err(
+                "invalid buffer id or already taken",
+            ))
         }
     }
 
@@ -382,7 +433,12 @@ impl PyRuntime {
     /// The `py_callable` is called with each message as an argument.
     /// If `release_gil` is true, the Python callback and hot-swap are executed
     /// in `tokio::task::spawn_blocking` so the actor's async loop doesn't hold the GIL.
-    fn spawn_py_handler(&self, py_callable: PyObject, budget: usize, release_gil: Option<bool>) -> PyResult<u64> {
+    fn spawn_py_handler(
+        &self,
+        py_callable: PyObject,
+        budget: usize,
+        release_gil: Option<bool>,
+    ) -> PyResult<u64> {
         let release = release_gil.unwrap_or(false);
         let behavior = Arc::new(parking_lot::RwLock::new(py_callable));
         // Safety guard: limit number of dedicated GIL-release threads to avoid OOM
@@ -395,8 +451,14 @@ impl PyRuntime {
 
         // Pool task description used by shared workers
         enum PoolTask {
-            Execute { behavior: Arc<parking_lot::RwLock<PyObject>>, bytes: bytes::Bytes },
-            HotSwap { behavior: Arc<parking_lot::RwLock<PyObject>>, ptr: usize },
+            Execute {
+                behavior: Arc<parking_lot::RwLock<PyObject>>,
+                bytes: bytes::Bytes,
+            },
+            HotSwap {
+                behavior: Arc<parking_lot::RwLock<PyObject>>,
+                ptr: usize,
+            },
         }
 
         struct GilPool {
@@ -430,7 +492,10 @@ impl PyRuntime {
                                         continue;
                                     }
                                     Python::with_gil(|py| unsafe {
-                                        let new_obj = PyObject::from_owned_ptr(py, ptr as *mut pyo3::ffi::PyObject);
+                                        let new_obj = PyObject::from_owned_ptr(
+                                            py,
+                                            ptr as *mut pyo3::ffi::PyObject,
+                                        );
                                         *behavior.write() = new_obj;
                                     });
                                 }
@@ -448,22 +513,26 @@ impl PyRuntime {
         // spawn_blocking overhead and blocking-pool saturation. If we exceed the
         // dedicated-thread limit we fall back to a shared GIL worker pool.
         let maybe_tx = if release {
-                // Read configurable limits from the Runtime instance
-                let (max_threads, pool_size) = self.inner.get_release_gil_limits();
-                let strict = self.inner.is_release_gil_strict();
+            // Read configurable limits from the Runtime instance
+            let (max_threads, pool_size) = self.inner.get_release_gil_limits();
+            let strict = self.inner.is_release_gil_strict();
 
-                // Enforce global limit for dedicated threads
-                let prev = RELEASE_GIL_THREADS.fetch_add(1, Ordering::SeqCst);
-                if prev >= max_threads {
-                    // Reached limit: decrement counter
-                    RELEASE_GIL_THREADS.fetch_sub(1, Ordering::SeqCst);
-                    if strict {
-                        return Err(pyo3::exceptions::PyRuntimeError::new_err("release_gil thread limit exceeded"));
-                    }
-                    // Use shared pool as a fallback
-                    let _ = GIL_WORKER_POOL.get_or_init(|| Arc::new(GilPool::new(pool_size))).clone();
-                    None
-                } else {
+            // Enforce global limit for dedicated threads
+            let prev = RELEASE_GIL_THREADS.fetch_add(1, Ordering::SeqCst);
+            if prev >= max_threads {
+                // Reached limit: decrement counter
+                RELEASE_GIL_THREADS.fetch_sub(1, Ordering::SeqCst);
+                if strict {
+                    return Err(pyo3::exceptions::PyRuntimeError::new_err(
+                        "release_gil thread limit exceeded",
+                    ));
+                }
+                // Use shared pool as a fallback
+                let _ = GIL_WORKER_POOL
+                    .get_or_init(|| Arc::new(GilPool::new(pool_size)))
+                    .clone();
+                None
+            } else {
                 let (tx, rx) = cb_channel::unbounded::<crate::mailbox::Message>();
                 let b_thread = behavior.clone();
 
@@ -475,12 +544,17 @@ impl PyRuntime {
 
                     while let Ok(msg) = rx.recv() {
                         match msg {
-                            crate::mailbox::Message::System(crate::mailbox::SystemMessage::HotSwap(ptr)) => {
+                            crate::mailbox::Message::System(
+                                crate::mailbox::SystemMessage::HotSwap(ptr),
+                            ) => {
                                 if unsafe { pyo3::ffi::Py_IsInitialized() } == 0 {
                                     continue;
                                 }
                                 Python::with_gil(|py| unsafe {
-                                    let new_obj = PyObject::from_owned_ptr(py, ptr as *mut pyo3::ffi::PyObject);
+                                    let new_obj = PyObject::from_owned_ptr(
+                                        py,
+                                        ptr as *mut pyo3::ffi::PyObject,
+                                    );
                                     *b_thread.write() = new_obj;
                                 });
                             }
@@ -498,11 +572,17 @@ impl PyRuntime {
                                     }
                                 });
                             }
-                            crate::mailbox::Message::System(crate::mailbox::SystemMessage::Exit(_)) => {
+                            crate::mailbox::Message::System(
+                                crate::mailbox::SystemMessage::Exit(_),
+                            ) => {
                                 break;
                             }
-                            crate::mailbox::Message::System(crate::mailbox::SystemMessage::Ping) |
-                            crate::mailbox::Message::System(crate::mailbox::SystemMessage::Pong) => {}
+                            crate::mailbox::Message::System(
+                                crate::mailbox::SystemMessage::Ping,
+                            )
+                            | crate::mailbox::Message::System(
+                                crate::mailbox::SystemMessage::Pong,
+                            ) => {}
                         }
                     }
                     // Thread is exiting — decrement global counter
@@ -525,21 +605,29 @@ impl PyRuntime {
                 }
 
                 match msg {
-                    crate::mailbox::Message::System(crate::mailbox::SystemMessage::HotSwap(_)) if tx.is_some() => {
+                    crate::mailbox::Message::System(crate::mailbox::SystemMessage::HotSwap(_))
+                        if tx.is_some() =>
+                    {
                         // Forward hot-swap to the dedicated Python thread to perform
                         // the pointer->PyObject conversion under the GIL.
                         if let Some(tx) = tx {
                             let _ = tx.send(msg);
                         }
                     }
-                    crate::mailbox::Message::System(crate::mailbox::SystemMessage::HotSwap(ptr)) if release_gil => {
+                    crate::mailbox::Message::System(crate::mailbox::SystemMessage::HotSwap(
+                        ptr,
+                    )) if release_gil => {
                         // No dedicated thread available — use shared pool if present, else fallback inline
                         if let Some(pool) = GIL_WORKER_POOL.get() {
-                            let task = PoolTask::HotSwap { behavior: b.clone(), ptr };
+                            let task = PoolTask::HotSwap {
+                                behavior: b.clone(),
+                                ptr,
+                            };
                             let _ = pool.sender.send(task);
                         } else {
                             Python::with_gil(|py| unsafe {
-                                let new_obj = PyObject::from_owned_ptr(py, ptr as *mut pyo3::ffi::PyObject);
+                                let new_obj =
+                                    PyObject::from_owned_ptr(py, ptr as *mut pyo3::ffi::PyObject);
                                 *b.write() = new_obj;
                             });
                         }
@@ -551,7 +639,10 @@ impl PyRuntime {
                     }
                     crate::mailbox::Message::User(bytes) if release_gil => {
                         if let Some(pool) = GIL_WORKER_POOL.get() {
-                            let task = PoolTask::Execute { behavior: b.clone(), bytes: bytes.clone() };
+                            let task = PoolTask::Execute {
+                                behavior: b.clone(),
+                                bytes: bytes.clone(),
+                            };
                             let _ = pool.sender.send(task);
                         } else {
                             Python::with_gil(|py| {
@@ -566,9 +657,12 @@ impl PyRuntime {
                         }
                     }
                     // No dedicated thread: execute inline under the GIL.
-                    crate::mailbox::Message::System(crate::mailbox::SystemMessage::HotSwap(ptr)) => {
+                    crate::mailbox::Message::System(crate::mailbox::SystemMessage::HotSwap(
+                        ptr,
+                    )) => {
                         Python::with_gil(|py| unsafe {
-                            let new_obj = PyObject::from_owned_ptr(py, ptr as *mut pyo3::ffi::PyObject);
+                            let new_obj =
+                                PyObject::from_owned_ptr(py, ptr as *mut pyo3::ffi::PyObject);
                             *b.write() = new_obj;
                         });
                     }
@@ -588,8 +682,8 @@ impl PyRuntime {
                         // If we have a dedicated thread, dropping tx will cause it to exit.
                         drop(tx);
                     }
-                    crate::mailbox::Message::System(crate::mailbox::SystemMessage::Ping) |
-                    crate::mailbox::Message::System(crate::mailbox::SystemMessage::Pong) => {}
+                    crate::mailbox::Message::System(crate::mailbox::SystemMessage::Ping)
+                    | crate::mailbox::Message::System(crate::mailbox::SystemMessage::Pong) => {}
                 }
             }
         };
@@ -601,43 +695,55 @@ impl PyRuntime {
     /// The `py_callable` is called ONCE with a `PyMailbox` object in a dedicated OS thread.
     /// This mimics Erlang/Go style blocking actors without needing Python asyncio.
     fn spawn_with_mailbox(&self, py_callable: PyObject, budget: usize) -> PyResult<u64> {
-        let pid = self.inner.spawn_actor_with_budget(move |rx| async move {
-            let mailbox = PyMailbox {
-                inner: Arc::new(TokioMutex::new(rx))
-            };
-            
-            // We are currently in a Tokio worker thread (async).
-            // We need to spawn a dedicated OS thread (blocking) for the Python synchronous loop
-            // to avoid blocking the Tokio runtime.
-            let handle = tokio::task::spawn_blocking(move || {
-                if unsafe { pyo3::ffi::Py_IsInitialized() } == 0 {
-                    return;
-                }
-                
-                Python::with_gil(|py| {
-                    // Just call the function. It is expected to block on mailbox.recv()
-                    if let Err(e) = py_callable.call1(py, (mailbox,)) {
-                        eprintln!("[Myrmidon] Python mailbox actor exception: {}", e);
-                        e.print(py);
-                    }
-                });
-            });
+        let pid = self.inner.spawn_actor_with_budget(
+            move |rx| async move {
+                let mailbox = PyMailbox {
+                    inner: Arc::new(TokioMutex::new(rx)),
+                };
 
-            // Await the thread's completion. This keeps the actor "alive" in the system
-            // until the Python function returns.
-            let _ = handle.await;
-        }, budget);
+                // We are currently in a Tokio worker thread (async).
+                // We need to spawn a dedicated OS thread (blocking) for the Python synchronous loop
+                // to avoid blocking the Tokio runtime.
+                let handle = tokio::task::spawn_blocking(move || {
+                    if unsafe { pyo3::ffi::Py_IsInitialized() } == 0 {
+                        return;
+                    }
+
+                    Python::with_gil(|py| {
+                        // Just call the function. It is expected to block on mailbox.recv()
+                        if let Err(e) = py_callable.call1(py, (mailbox,)) {
+                            eprintln!("[Myrmidon] Python mailbox actor exception: {}", e);
+                            e.print(py);
+                        }
+                    });
+                });
+
+                // Await the thread's completion. This keeps the actor "alive" in the system
+                // until the Python function returns.
+                let _ = handle.await;
+            },
+            budget,
+        );
 
         Ok(pid)
     }
 
     fn send(&self, pid: u64, data: &PyBytes) -> PyResult<bool> {
         let msg = bytes::Bytes::copy_from_slice(data.as_bytes());
-        Ok(self.inner.send(pid, crate::mailbox::Message::User(msg)).is_ok())
+        Ok(self
+            .inner
+            .send(pid, crate::mailbox::Message::User(msg))
+            .is_ok())
     }
 
     /// Await selectively on observed messages for `pid` using a Python callable.
-    fn selective_recv_observed_py<'py>(&self, py: Python<'py>, pid: u64, matcher: PyObject, timeout: Option<f64>) -> PyResult<&'py PyAny> {
+    fn selective_recv_observed_py<'py>(
+        &self,
+        py: Python<'py>,
+        pid: u64,
+        matcher: PyObject,
+        timeout: Option<f64>,
+    ) -> PyResult<&'py PyAny> {
         let rt = self.inner.clone();
         future_into_py(py, async move {
             let op = async {
@@ -659,7 +765,7 @@ impl PyRuntime {
             if let Some(sec) = timeout {
                 match tokio::time::timeout(Duration::from_secs_f64(sec), op).await {
                     Ok(val) => Ok(val),
-                    Err(_) => Ok(Python::with_gil(|py| py.None()))
+                    Err(_) => Ok(Python::with_gil(|py| py.None())),
                 }
             } else {
                 Ok(op.await)
@@ -690,8 +796,8 @@ impl PyRuntime {
     }
 
     fn watch(&self, pid: u64, strategy: &str) -> PyResult<()> {
-        use crate::supervisor::RestartStrategy;
         use crate::supervisor::ChildSpec;
+        use crate::supervisor::RestartStrategy;
         use std::sync::Arc;
 
         let strat = match strategy.to_lowercase().as_str() {
@@ -700,12 +806,20 @@ impl PyRuntime {
             _ => return Err(pyo3::exceptions::PyValueError::new_err("invalid strategy")),
         };
 
-        let spec = ChildSpec { factory: Arc::new(move || Ok(pid)), strategy: strat };
+        let spec = ChildSpec {
+            factory: Arc::new(move || Ok(pid)),
+            strategy: strat,
+        };
         self.inner.supervisor().add_child(pid, spec);
         Ok(())
     }
 
-    fn supervise_with_factory(&self, pid: u64, py_factory: PyObject, strategy: &str) -> PyResult<()> {
+    fn supervise_with_factory(
+        &self,
+        pid: u64,
+        py_factory: PyObject,
+        strategy: &str,
+    ) -> PyResult<()> {
         use std::sync::Arc;
 
         let strat = match strategy.to_lowercase().as_str() {
@@ -722,21 +836,22 @@ impl PyRuntime {
         })?;
 
         let factory_py = py_factory.clone();
-        let factory_closure: Arc<dyn Fn() -> Result<crate::pid::Pid, String> + Send + Sync> = Arc::new(move || {
-            if unsafe { pyo3::ffi::Py_IsInitialized() } == 0 {
-                return Err("Interpreter shutting down".to_string());
-            }
-            Python::with_gil(|py| {
-                let obj = factory_py.as_ref(py);
-                match obj.call0() {
-                    Ok(v) => match v.extract::<u64>() {
-                        Ok(pid) => Ok(pid),
-                             Err(e) => Err(e.to_string())
-                    },
-                    Err(e) => Err(e.to_string())
+        let factory_closure: Arc<dyn Fn() -> Result<crate::pid::Pid, String> + Send + Sync> =
+            Arc::new(move || {
+                if unsafe { pyo3::ffi::Py_IsInitialized() } == 0 {
+                    return Err("Interpreter shutting down".to_string());
                 }
-            })
-        });
+                Python::with_gil(|py| {
+                    let obj = factory_py.as_ref(py);
+                    match obj.call0() {
+                        Ok(v) => match v.extract::<u64>() {
+                            Ok(pid) => Ok(pid),
+                            Err(e) => Err(e.to_string()),
+                        },
+                        Err(e) => Err(e.to_string()),
+                    }
+                })
+            });
 
         self.inner.supervise(pid, factory_closure, strat);
         Ok(())
@@ -757,5 +872,4 @@ pub fn make_module(py: Python) -> PyResult<Py<PyModule>> {
 }
 
 #[cfg(feature = "pyo3")]
-pub fn init() {
-}
+pub fn init() {}

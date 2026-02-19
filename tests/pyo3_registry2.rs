@@ -11,9 +11,12 @@ async fn test_registry_lifecycle() {
         let rt = module.getattr(py, "PyRuntime").unwrap().call0(py).unwrap();
         let locals = PyDict::new(py);
         locals.set_item("rt", rt).unwrap();
-        locals.set_item("__builtins__", py.import("builtins").unwrap()).unwrap();
+        locals
+            .set_item("__builtins__", py.import("builtins").unwrap())
+            .unwrap();
 
-        py.run(r#"
+        py.run(
+            r#"
 import time
 
 # 1. Spawn a simple mailbox actor
@@ -49,7 +52,11 @@ assert gone is None, f"Expected None after unregister, got {gone}"
 
 # Clean up
 rt.stop(pid)
-"#, Some(locals), Some(locals)).unwrap();
+"#,
+            Some(locals),
+            Some(locals),
+        )
+        .unwrap();
     });
 }
 
@@ -60,9 +67,12 @@ async fn test_communication_via_name() {
         let rt = module.getattr(py, "PyRuntime").unwrap().call0(py).unwrap();
         let locals = PyDict::new(py);
         locals.set_item("rt", rt).unwrap();
-        locals.set_item("__builtins__", py.import("builtins").unwrap()).unwrap();
+        locals
+            .set_item("__builtins__", py.import("builtins").unwrap())
+            .unwrap();
 
-        py.run(r#"
+        py.run(
+            r#"
 import time
 
 # Actor that receives a message and writes it to a global
@@ -88,14 +98,19 @@ else:
 
 # Wait for actor to process
 time.sleep(0.2)
-"#, Some(locals), Some(locals)).unwrap();
+"#,
+            Some(locals),
+            Some(locals),
+        )
+        .unwrap();
 
         // Verify the actor received the message via the looked-up PID
-        let result: Vec<u8> = locals.get_item("log_result")
+        let result: Vec<u8> = locals
+            .get_item("log_result")
             .expect("log_result not set - actor did not receive message")
             .extract()
             .unwrap();
-        
+
         assert_eq!(result, b"log_this_data");
     });
 }
@@ -107,14 +122,19 @@ async fn test_register_non_existent_returns_none() {
         let rt = module.getattr(py, "PyRuntime").unwrap().call0(py).unwrap();
         let locals = PyDict::new(py);
         locals.set_item("rt", rt).unwrap();
-        
-        py.run(r#"
+
+        py.run(
+            r#"
 # resolving a name that was never registered should return None
 assert rt.resolve("ghost_service") is None
 assert rt.whereis("ghost_service") is None
 
 # unregistering a non-existent name should be safe (no-op)
 rt.unregister("ghost_service")
-"#, Some(locals), Some(locals)).unwrap();
+"#,
+            Some(locals),
+            Some(locals),
+        )
+        .unwrap();
     });
 }

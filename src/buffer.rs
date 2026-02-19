@@ -1,6 +1,6 @@
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 pub type BufferId = u64;
 
@@ -11,7 +11,10 @@ pub struct BufferRegistry {
 
 impl BufferRegistry {
     pub fn new() -> Self {
-        BufferRegistry { inner: Arc::new(Mutex::new(HashMap::new())), next: AtomicU64::new(1) }
+        BufferRegistry {
+            inner: Arc::new(Mutex::new(HashMap::new())),
+            next: AtomicU64::new(1),
+        }
     }
 
     pub fn allocate(&self, size: usize) -> BufferId {

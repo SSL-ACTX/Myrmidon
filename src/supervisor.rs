@@ -6,8 +6,8 @@
 //! watched child exits the supervisor may restart the single child (one-for-one)
 //! or restart the whole supervised group (one-for-all).
 
-use dashmap::DashMap;
 use crate::pid::Pid;
+use dashmap::DashMap;
 use std::sync::{Arc, Mutex};
 
 /// Restart strategies supported in Phase 1.
@@ -89,7 +89,10 @@ impl Supervisor {
     /// Backwards-compatible `watch` that simply inserts a default ChildSpec.
     /// Useful for tests / simple use-cases.
     pub fn watch(&self, pid: Pid) {
-        let spec = ChildSpec { factory: Arc::new(move || Ok(pid)), strategy: RestartStrategy::RestartOne };
+        let spec = ChildSpec {
+            factory: Arc::new(move || Ok(pid)),
+            strategy: RestartStrategy::RestartOne,
+        };
         self.children.insert(pid, spec);
     }
 
@@ -136,7 +139,11 @@ impl Supervisor {
             Some(s) => s.clone(),
             None => return,
         };
-        tracing::info!("[supervisor] notify_exit(pid={}) strategy={:?}", pid, spec.strategy);
+        tracing::info!(
+            "[supervisor] notify_exit(pid={}) strategy={:?}",
+            pid,
+            spec.strategy
+        );
 
         // Perform restart logic asynchronously to avoid blocking the caller and
         // to allow introducing backoff/retries for flaky factories.
@@ -165,9 +172,14 @@ impl Supervisor {
             match spec_clone.strategy {
                 RestartStrategy::RestartAll => {
                     // Capture current specs/pids
-                    let all: Vec<(Pid, ChildSpec)> = children.iter().map(|kv| (*kv.key(), kv.value().clone())).collect();
+                    let all: Vec<(Pid, ChildSpec)> = children
+                        .iter()
+                        .map(|kv| (*kv.key(), kv.value().clone()))
+                        .collect();
                     // clear map to avoid nested restarts
-                    for (k, _) in &all { children.remove(k); }
+                    for (k, _) in &all {
+                        children.remove(k);
+                    }
 
                     for (orig_pid, s) in all {
                         // Cleanup links for the old PID as it is now dead
@@ -177,15 +189,23 @@ impl Supervisor {
                         loop {
                             attempts += 1;
                             match (s.factory)() {
-                                Ok(new_pid) => { children.insert(new_pid, s.clone()); break; }
+                                Ok(new_pid) => {
+                                    children.insert(new_pid, s.clone());
+                                    break;
+                                }
                                 Err(err) => {
                                     tracing::error!("[supervisor] factory failed during RestartAll attempt={} err={}", attempts, err);
                                     {
                                         let mut guard = errors.lock().unwrap();
                                         guard.push(err.clone());
                                     } // drop guard before awaiting
-                                    if attempts >= max_attempts { break; }
-                                    tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
+                                    if attempts >= max_attempts {
+                                        break;
+                                    }
+                                    tokio::time::sleep(std::time::Duration::from_millis(
+                                        backoff_ms,
+                                    ))
+                                    .await;
                                     backoff_ms = backoff_ms.saturating_mul(2);
                                 }
                             }
@@ -202,15 +222,23 @@ impl Supervisor {
                         loop {
                             attempts += 1;
                             match (s.factory)() {
-                                Ok(new_pid) => { children.insert(new_pid, s.clone()); break; }
+                                Ok(new_pid) => {
+                                    children.insert(new_pid, s.clone());
+                                    break;
+                                }
                                 Err(err) => {
                                     tracing::error!("[supervisor] factory failed during RestartOne attempt={} err={}", attempts, err);
                                     {
                                         let mut guard = errors.lock().unwrap();
                                         guard.push(err.clone());
                                     } // drop guard before awaiting
-                                    if attempts >= max_attempts { break; }
-                                    tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
+                                    if attempts >= max_attempts {
+                                        break;
+                                    }
+                                    tokio::time::sleep(std::time::Duration::from_millis(
+                                        backoff_ms,
+                                    ))
+                                    .await;
                                     backoff_ms = backoff_ms.saturating_mul(2);
                                 }
                             }
@@ -243,7 +271,10 @@ mod tests {
         let s = Supervisor::new();
         // Insert a child whose factory always fails
         let bad_factory = Arc::new(move || Err::<Pid, String>("boom".to_string()));
-        let spec = ChildSpec { factory: bad_factory, strategy: RestartStrategy::RestartOne };
+        let spec = ChildSpec {
+            factory: bad_factory,
+            strategy: RestartStrategy::RestartOne,
+        };
         s.add_child(42, spec);
 
         // Notify exit: factory should fail and the children map should be empty
@@ -263,7 +294,11 @@ mod tests {
             }
 
             if attempts > 30 {
-                panic!("Timeout waiting for supervisor: children_count={} errors={}", s.children_count(), s.errors().len());
+                panic!(
+                    "Timeout waiting for supervisor: children_count={} errors={}",
+                    s.children_count(),
+                    s.errors().len()
+                );
             }
         }
 

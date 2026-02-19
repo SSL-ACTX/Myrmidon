@@ -2,7 +2,7 @@
 #![cfg(feature = "pyo3")]
 
 use pyo3::prelude::*;
-use pyo3::types::{PyList, PyDict};
+use pyo3::types::{PyDict, PyList};
 use std::time::Duration;
 
 #[tokio::test]
@@ -17,28 +17,40 @@ async fn test_name_registration_and_resolution() {
         let locals = PyDict::new(py);
         locals.set_item("results", results).unwrap();
 
-        py.run(r#"
+        py.run(
+            r#"
 def named_handler(msg, results=results):
     results.append(msg.decode())
-"#, None, Some(locals)).unwrap();
+"#,
+            None,
+            Some(locals),
+        )
+        .unwrap();
 
         let handler = locals.get_item("named_handler").unwrap();
 
         // 2. Spawn and Register
-        let pid: u64 = rt.call_method1("spawn_py_handler", (handler, 10usize))
-            .unwrap().extract().unwrap();
+        let pid: u64 = rt
+            .call_method1("spawn_py_handler", (handler, 10usize))
+            .unwrap()
+            .extract()
+            .unwrap();
 
         rt.call_method1("register", ("my_service", pid)).unwrap();
 
         // 3. Resolve and Verify
-        let resolved_pid: Option<u64> = rt.call_method1("resolve", ("my_service",))
-            .unwrap().extract().unwrap();
+        let resolved_pid: Option<u64> = rt
+            .call_method1("resolve", ("my_service",))
+            .unwrap()
+            .extract()
+            .unwrap();
 
         assert_eq!(resolved_pid, Some(pid));
 
         // 4. Send message via the resolved PID
         let msg = pyo3::types::PyBytes::new(py, b"hello registry");
-        rt.call_method1("send", (resolved_pid.unwrap(), msg)).unwrap();
+        rt.call_method1("send", (resolved_pid.unwrap(), msg))
+            .unwrap();
     });
 
     // Small sleep for async processing

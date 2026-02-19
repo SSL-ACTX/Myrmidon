@@ -5,13 +5,13 @@
 //! cooperative scheduling, distributed networking, name registration,
 //! and remote service discovery.
 
-pub mod pid;
+pub mod buffer;
 pub mod mailbox;
+pub mod network;
+pub mod pid;
+pub mod registry;
 pub mod scheduler;
 pub mod supervisor;
-pub mod buffer;
-pub mod network;
-pub mod registry;
 
 #[cfg(feature = "pyo3")]
 pub mod py;
@@ -21,16 +21,16 @@ pub mod node;
 
 use crate::pid::Pid;
 use dashmap::DashMap;
-use std::sync::{Arc, Mutex};
 use once_cell::sync::Lazy;
+use std::sync::{Arc, Mutex};
 use tokio::runtime::Runtime as TokioRuntime;
 
 /// A global, multi-threaded Tokio runtime shared by all Myrmidon instances.
 static RUNTIME: Lazy<TokioRuntime> = Lazy::new(|| {
     tokio::runtime::Builder::new_multi_thread()
-    .enable_all()
-    .build()
-    .expect("Failed to create Myrmidon Tokio Runtime")
+        .enable_all()
+        .build()
+        .expect("Failed to create Myrmidon Tokio Runtime")
 });
 
 /// Lightweight runtime for spawning actors and managing distributed nodes.
@@ -88,7 +88,10 @@ impl Runtime {
 
     /// Get the current release_gil limits (max_threads, pool_size).
     pub fn get_release_gil_limits(&self) -> (usize, usize) {
-        (*self.release_gil_max_threads.lock().unwrap(), *self.gil_pool_size.lock().unwrap())
+        (
+            *self.release_gil_max_threads.lock().unwrap(),
+            *self.gil_pool_size.lock().unwrap(),
+        )
     }
 
     /// Returns whether strict failure mode is enabled.
@@ -197,8 +200,8 @@ impl Runtime {
 
     pub fn spawn_actor<H, Fut>(&self, handler: H) -> Pid
     where
-    H: FnOnce(mailbox::MailboxReceiver) -> Fut + Send + 'static,
-    Fut: std::future::Future<Output = ()> + Send + 'static,
+        H: FnOnce(mailbox::MailboxReceiver) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = ()> + Send + 'static,
     {
         let mut slab = self.slab.lock().unwrap();
         let pid = slab.allocate();
@@ -220,7 +223,8 @@ impl Runtime {
             let linked = supervisor2.linked_pids(pid);
             for lp in linked {
                 if let Some(sender) = mailboxes2.get(&lp) {
-                    let _ = sender.send(mailbox::Message::System(mailbox::SystemMessage::Exit(pid)));
+                    let _ =
+                        sender.send(mailbox::Message::System(mailbox::SystemMessage::Exit(pid)));
                 }
             }
         });
@@ -230,8 +234,8 @@ impl Runtime {
 
     pub fn spawn_actor_with_budget<H, Fut>(&self, handler: H, budget: usize) -> Pid
     where
-    H: FnOnce(mailbox::MailboxReceiver) -> Fut + Send + 'static,
-    Fut: std::future::Future<Output = ()> + Send + 'static,
+        H: FnOnce(mailbox::MailboxReceiver) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = ()> + Send + 'static,
     {
         let mut slab = self.slab.lock().unwrap();
         let pid = slab.allocate();
@@ -255,7 +259,8 @@ impl Runtime {
             let linked = supervisor2.linked_pids(pid);
             for lp in linked {
                 if let Some(sender) = mailboxes2.get(&lp) {
-                    let _ = sender.send(mailbox::Message::System(mailbox::SystemMessage::Exit(pid)));
+                    let _ =
+                        sender.send(mailbox::Message::System(mailbox::SystemMessage::Exit(pid)));
                 }
             }
         });
@@ -265,8 +270,8 @@ impl Runtime {
 
     pub fn spawn_handler_with_budget<H, Fut>(&self, handler: H, budget: usize) -> Pid
     where
-    H: Fn(mailbox::Message) -> Fut + Send + Sync + 'static,
-    Fut: std::future::Future<Output = ()> + Send + 'static,
+        H: Fn(mailbox::Message) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<Output = ()> + Send + 'static,
     {
         let mut slab = self.slab.lock().unwrap();
         let pid = slab.allocate();
@@ -298,7 +303,8 @@ impl Runtime {
             let linked = supervisor2.linked_pids(pid);
             for lp in linked {
                 if let Some(sender) = mailboxes2.get(&lp) {
-                    let _ = sender.send(mailbox::Message::System(mailbox::SystemMessage::Exit(pid)));
+                    let _ =
+                        sender.send(mailbox::Message::System(mailbox::SystemMessage::Exit(pid)));
                 }
             }
         });
@@ -339,7 +345,8 @@ impl Runtime {
             let linked = supervisor2.linked_pids(pid);
             for lp in linked {
                 if let Some(sender) = mailboxes2.get(&lp) {
-                    let _ = sender.send(mailbox::Message::System(mailbox::SystemMessage::Exit(pid)));
+                    let _ =
+                        sender.send(mailbox::Message::System(mailbox::SystemMessage::Exit(pid)));
                 }
             }
         });
@@ -348,12 +355,18 @@ impl Runtime {
     }
 
     pub fn get_observed_messages(&self, pid: Pid) -> Option<Vec<mailbox::Message>> {
-        self.observers.get(&pid).map(|entry| entry.value().lock().unwrap().clone())
+        self.observers
+            .get(&pid)
+            .map(|entry| entry.value().lock().unwrap().clone())
     }
 
     /// Remove and return a single observed message matching the predicate.
     /// Used by FFI helpers to implement selective receive for observed actors.
-    pub fn take_observed_message_matching<F>(&self, pid: Pid, mut matcher: F) -> Option<mailbox::Message>
+    pub fn take_observed_message_matching<F>(
+        &self,
+        pid: Pid,
+        mut matcher: F,
+    ) -> Option<mailbox::Message>
     where
         F: FnMut(&mailbox::Message) -> bool,
     {
@@ -383,7 +396,12 @@ impl Runtime {
         self.supervisor.clone()
     }
 
-    pub fn supervise(&self, pid: Pid, factory: Arc<dyn Fn() -> Result<Pid, String> + Send + Sync>, strategy: supervisor::RestartStrategy) {
+    pub fn supervise(
+        &self,
+        pid: Pid,
+        factory: Arc<dyn Fn() -> Result<Pid, String> + Send + Sync>,
+        strategy: supervisor::RestartStrategy,
+    ) {
         let spec = supervisor::ChildSpec { factory, strategy };
         self.supervisor.add_child(pid, spec);
     }
