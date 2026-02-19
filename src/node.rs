@@ -16,6 +16,8 @@ use tokio::sync::Mutex;
 pub struct JsSystemMessage {
     pub type_name: String,
     pub target_pid: Option<i64>,
+    pub reason: Option<String>,
+    pub metadata: Option<String>,
 }
 
 // Helper to convert Rust Message -> JS
@@ -27,7 +29,14 @@ fn message_to_js(env: &Env, msg: Message) -> Result<JsUnknown> {
         }
         Message::System(sys) => {
             let (type_name, target_pid) = match sys {
-                SystemMessage::Exit(pid) => ("EXIT", Some(pid as i64)),
+                SystemMessage::Exit(info) => ("EXIT", Some(info.from as i64), match info.reason {
+                    crate::mailbox::ExitReason::Normal => Some("normal".to_string()),
+                    crate::mailbox::ExitReason::Panic => Some("panic".to_string()),
+                    crate::mailbox::ExitReason::Timeout => Some("timeout".to_string()),
+                    crate::mailbox::ExitReason::Killed => Some("killed".to_string()),
+                    crate::mailbox::ExitReason::Oom => Some("oom".to_string()),
+                    crate::mailbox::ExitReason::Other(ref s) => Some(s.clone()),
+                }, info.metadata.clone()),
                 SystemMessage::HotSwap(_) => ("HOT_SWAP", None),
                 SystemMessage::Ping => ("PING", None),
                 SystemMessage::Pong => ("PONG", None),
@@ -37,6 +46,12 @@ fn message_to_js(env: &Env, msg: Message) -> Result<JsUnknown> {
             obj.set_named_property("typeName", type_name)?;
             if let Some(pid) = target_pid {
                 obj.set_named_property("targetPid", pid)?;
+            }
+            if let Some(r) = reason {
+                obj.set_named_property("reason", r)?;
+            }
+            if let Some(m) = metadata {
+                obj.set_named_property("metadata", m)?;
             }
 
             Ok(obj.into_unknown())
@@ -94,17 +109,31 @@ impl From<Message> for WrappedMessage {
                 system: None,
             },
             Message::System(sys) => {
-                let (type_name, target_pid) = match sys {
-                    SystemMessage::Exit(pid) => ("EXIT".to_string(), Some(pid as i64)),
-                    SystemMessage::HotSwap(_) => ("HOT_SWAP".to_string(), None),
-                    SystemMessage::Ping => ("PING".to_string(), None),
-                    SystemMessage::Pong => ("PONG".to_string(), None),
+                let (type_name, target_pid, reason, metadata) = match sys {
+                    SystemMessage::Exit(info) => (
+                        "EXIT".to_string(),
+                        Some(info.from as i64),
+                        match info.reason {
+                            crate::mailbox::ExitReason::Normal => Some("normal".to_string()),
+                            crate::mailbox::ExitReason::Panic => Some("panic".to_string()),
+                            crate::mailbox::ExitReason::Timeout => Some("timeout".to_string()),
+                            crate::mailbox::ExitReason::Killed => Some("killed".to_string()),
+                            crate::mailbox::ExitReason::Oom => Some("oom".to_string()),
+                            crate::mailbox::ExitReason::Other(ref s) => Some(s.clone()),
+                        },
+                        info.metadata.clone(),
+                    ),
+                    SystemMessage::HotSwap(_) => ("HOT_SWAP".to_string(), None, None, None),
+                    SystemMessage::Ping => ("PING".to_string(), None, None, None),
+                    SystemMessage::Pong => ("PONG".to_string(), None, None, None),
                 };
                 WrappedMessage {
                     data: None,
                     system: Some(JsSystemMessage {
                         type_name,
                         target_pid,
+                        reason,
+                        metadata,
                     }),
                 }
             }

@@ -102,16 +102,31 @@ pub struct PySystemMessage {
     pub type_name: String,
     #[pyo3(get)]
     pub target_pid: Option<u64>,
+    #[pyo3(get)]
+    pub reason: String,
+    #[pyo3(get)]
+    pub metadata: Option<String>,
 }
 
 /// Helper to convert a Rust `Message` to a Python object.
 fn message_to_py(py: Python, msg: crate::mailbox::Message) -> PyObject {
     match msg {
         crate::mailbox::Message::User(b) => PyBytes::new(py, &b).into_py(py),
-        crate::mailbox::Message::System(crate::mailbox::SystemMessage::Exit(target)) => {
+        crate::mailbox::Message::System(crate::mailbox::SystemMessage::Exit(info)) => {
+            let reason = match info.reason {
+                crate::mailbox::ExitReason::Normal => "normal".to_string(),
+                crate::mailbox::ExitReason::Panic => "panic".to_string(),
+                crate::mailbox::ExitReason::Timeout => "timeout".to_string(),
+                crate::mailbox::ExitReason::Killed => "killed".to_string(),
+                crate::mailbox::ExitReason::Oom => "oom".to_string(),
+                crate::mailbox::ExitReason::Other(ref s) => s.clone(),
+            };
+
             PySystemMessage {
                 type_name: "EXIT".to_string(),
-                target_pid: Some(target),
+                target_pid: Some(info.from),
+                reason,
+                metadata: info.metadata.clone(),
             }
             .into_py(py)
         }
@@ -119,17 +134,23 @@ fn message_to_py(py: Python, msg: crate::mailbox::Message) -> PyObject {
             PySystemMessage {
                 type_name: "HOT_SWAP".to_string(),
                 target_pid: None,
+                reason: "".to_string(),
+                metadata: None,
             }
             .into_py(py)
         }
         crate::mailbox::Message::System(crate::mailbox::SystemMessage::Ping) => PySystemMessage {
             type_name: "PING".to_string(),
             target_pid: None,
+            reason: "".to_string(),
+            metadata: None,
         }
         .into_py(py),
         crate::mailbox::Message::System(crate::mailbox::SystemMessage::Pong) => PySystemMessage {
             type_name: "PONG".to_string(),
             target_pid: None,
+            reason: "".to_string(),
+            metadata: None,
         }
         .into_py(py),
     }
@@ -143,10 +164,20 @@ fn run_python_matcher(py: Python, matcher: &PyObject, msg: &crate::mailbox::Mess
             Err(_) => false,
         },
         crate::mailbox::Message::System(s) => match s {
-            crate::mailbox::SystemMessage::Exit(target) => {
+            crate::mailbox::SystemMessage::Exit(info) => {
+                let reason = match info.reason {
+                    crate::mailbox::ExitReason::Normal => "normal".to_string(),
+                    crate::mailbox::ExitReason::Panic => "panic".to_string(),
+                    crate::mailbox::ExitReason::Timeout => "timeout".to_string(),
+                    crate::mailbox::ExitReason::Killed => "killed".to_string(),
+                    crate::mailbox::ExitReason::Oom => "oom".to_string(),
+                    crate::mailbox::ExitReason::Other(ref s) => s.clone(),
+                };
                 let obj = PySystemMessage {
                     type_name: "EXIT".to_string(),
-                    target_pid: Some(*target),
+                    target_pid: Some(info.from),
+                    reason,
+                    metadata: info.metadata.clone(),
                 };
                 match matcher.call1(py, (obj.into_py(py),)) {
                     Ok(val) => val.extract::<bool>(py).unwrap_or(false),
@@ -157,6 +188,8 @@ fn run_python_matcher(py: Python, matcher: &PyObject, msg: &crate::mailbox::Mess
                 let obj = PySystemMessage {
                     type_name: "HOT_SWAP".to_string(),
                     target_pid: None,
+                    reason: "".to_string(),
+                    metadata: None,
                 };
                 match matcher.call1(py, (obj.into_py(py),)) {
                     Ok(val) => val.extract::<bool>(py).unwrap_or(false),
@@ -167,6 +200,8 @@ fn run_python_matcher(py: Python, matcher: &PyObject, msg: &crate::mailbox::Mess
                 let obj = PySystemMessage {
                     type_name: "PING".to_string(),
                     target_pid: None,
+                    reason: "".to_string(),
+                    metadata: None,
                 };
                 match matcher.call1(py, (obj.into_py(py),)) {
                     Ok(val) => val.extract::<bool>(py).unwrap_or(false),
@@ -177,6 +212,8 @@ fn run_python_matcher(py: Python, matcher: &PyObject, msg: &crate::mailbox::Mess
                 let obj = PySystemMessage {
                     type_name: "PONG".to_string(),
                     target_pid: None,
+                    reason: "".to_string(),
+                    metadata: None,
                 };
                 match matcher.call1(py, (obj.into_py(py),)) {
                     Ok(val) => val.extract::<bool>(py).unwrap_or(false),
@@ -677,8 +714,7 @@ impl PyRuntime {
                             }
                         });
                     }
-                    crate::mailbox::Message::System(crate::mailbox::SystemMessage::Exit(pid)) => {
-                        let _ = pid;
+                    crate::mailbox::Message::System(crate::mailbox::SystemMessage::Exit(_info)) => {
                         // If we have a dedicated thread, dropping tx will cause it to exit.
                         drop(tx);
                     }
@@ -734,6 +770,29 @@ impl PyRuntime {
             .inner
             .send(pid, crate::mailbox::Message::User(msg))
             .is_ok())
+    }
+
+    /// Schedule a one-shot send from Python. Returns a numeric timer id.
+    fn send_after(&self, pid: u64, delay_ms: u64, data: &PyBytes) -> PyResult<u64> {
+        let msg = bytes::Bytes::copy_from_slice(data.as_bytes());
+        let id = self
+            .inner
+            .send_after(pid, delay_ms, crate::mailbox::Message::User(msg));
+        Ok(id)
+    }
+
+    /// Schedule a repeating interval send from Python. Returns a numeric timer id.
+    fn send_interval(&self, pid: u64, interval_ms: u64, data: &PyBytes) -> PyResult<u64> {
+        let msg = bytes::Bytes::copy_from_slice(data.as_bytes());
+        let id = self
+            .inner
+            .send_interval(pid, interval_ms, crate::mailbox::Message::User(msg));
+        Ok(id)
+    }
+
+    /// Cancel a previously scheduled timer/interval. Returns True if cancelled.
+    fn cancel_timer(&self, timer_id: u64) -> PyResult<bool> {
+        Ok(self.inner.cancel_timer(timer_id))
     }
 
     /// Await selectively on observed messages for `pid` using a Python callable.

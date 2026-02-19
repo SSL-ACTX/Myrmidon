@@ -23,6 +23,8 @@ use crate::pid::Pid;
 use dashmap::DashMap;
 use once_cell::sync::Lazy;
 use std::sync::{Arc, Mutex};
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::runtime::Runtime as TokioRuntime;
 
 /// A global, multi-threaded Tokio runtime shared by all Myrmidon instances.
@@ -46,6 +48,9 @@ pub struct Runtime {
     release_gil_max_threads: Arc<Mutex<usize>>,
     gil_pool_size: Arc<Mutex<usize>>,
     release_gil_strict: Arc<Mutex<bool>>,
+    // Timers: map from timer id -> cancellation sender
+    timers: Arc<Mutex<HashMap<u64, tokio::sync::oneshot::Sender<()>>>>,
+    timer_counter: Arc<AtomicU64>,
 }
 
 impl Runtime {
@@ -66,12 +71,74 @@ impl Runtime {
             release_gil_max_threads: Arc::new(Mutex::new(256)),
             gil_pool_size: Arc::new(Mutex::new(8)),
             release_gil_strict: Arc::new(Mutex::new(false)),
+            timers: Arc::new(Mutex::new(HashMap::new())),
+            timer_counter: Arc::new(AtomicU64::new(0)),
         };
 
         let net_manager = network::NetworkManager::new(Arc::new(rt.clone()));
         *rt.network.lock().unwrap() = Some(net_manager);
 
         rt
+    }
+
+    /// Schedule a one-shot message to be sent after `delay_ms` milliseconds.
+    /// Returns a timer id that can be used to cancel the pending send.
+    pub fn send_after(&self, pid: Pid, delay_ms: u64, msg: mailbox::Message) -> u64 {
+        let id = self.timer_counter.fetch_add(1, Ordering::SeqCst) + 1;
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        self.timers.lock().unwrap().insert(id, tx);
+
+        let rt_clone = self.clone();
+        RUNTIME.spawn(async move {
+            let sleep = tokio::time::sleep(std::time::Duration::from_millis(delay_ms));
+            tokio::select! {
+                _ = sleep => {
+                    let _ = rt_clone.send(pid, msg);
+                }
+                _ = rx => {
+                    // cancelled
+                }
+            }
+            let _ = rt_clone.timers.lock().unwrap().remove(&id);
+        });
+
+        id
+    }
+
+    /// Schedule a repeating interval that sends `msg` every `interval_ms` milliseconds.
+    /// Returns a timer id that can be used to cancel the interval.
+    pub fn send_interval(&self, pid: Pid, interval_ms: u64, msg: mailbox::Message) -> u64 {
+        let id = self.timer_counter.fetch_add(1, Ordering::SeqCst) + 1;
+        let (tx, mut rx) = tokio::sync::oneshot::channel::<()>();
+        self.timers.lock().unwrap().insert(id, tx);
+
+        let rt_clone = self.clone();
+        RUNTIME.spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_millis(interval_ms));
+            loop {
+                tokio::select! {
+                    _ = interval.tick() => {
+                        let _ = rt_clone.send(pid, msg.clone());
+                    }
+                    _ = &mut rx => {
+                        break;
+                    }
+                }
+            }
+            let _ = rt_clone.timers.lock().unwrap().remove(&id);
+        });
+
+        id
+    }
+
+    /// Cancel a scheduled timer/interval. Returns true if a timer was cancelled.
+    pub fn cancel_timer(&self, timer_id: u64) -> bool {
+        if let Some(tx) = self.timers.lock().unwrap().remove(&timer_id) {
+            let _ = tx.send(());
+            true
+        } else {
+            false
+        }
     }
 
     /// Set runtime limits for GIL release handling.
@@ -214,7 +281,19 @@ impl Runtime {
 
         RUNTIME.spawn(async move {
             let actor_handle = tokio::spawn(handler(rx));
-            let _ = actor_handle.await;
+            let res = actor_handle.await;
+
+            // Determine exit reason and metadata
+            let (reason, meta) = match res {
+                Ok(_) => (crate::mailbox::ExitReason::Normal, None),
+                Err(e) => {
+                    if e.is_panic() {
+                        (crate::mailbox::ExitReason::Panic, Some(format!("join_error: {:?}", e)))
+                    } else {
+                        (crate::mailbox::ExitReason::Other("join_error".to_string()), Some(format!("join_error: {:?}", e)))
+                    }
+                }
+            };
 
             mailboxes2.remove(&pid);
             supervisor2.notify_exit(pid);
@@ -223,8 +302,8 @@ impl Runtime {
             let linked = supervisor2.linked_pids(pid);
             for lp in linked {
                 if let Some(sender) = mailboxes2.get(&lp) {
-                    let _ =
-                        sender.send(mailbox::Message::System(mailbox::SystemMessage::Exit(pid)));
+                    let info = crate::mailbox::ExitInfo { from: pid, reason: reason.clone(), metadata: meta.clone() };
+                    let _ = sender.send(mailbox::Message::System(mailbox::SystemMessage::Exit(info)));
                 }
             }
         });
@@ -250,7 +329,18 @@ impl Runtime {
 
         RUNTIME.spawn(async move {
             let actor_handle = tokio::spawn(limited);
-            let _ = actor_handle.await;
+            let res = actor_handle.await;
+
+            let (reason, meta) = match res {
+                Ok(_) => (crate::mailbox::ExitReason::Normal, None),
+                Err(e) => {
+                    if e.is_panic() {
+                        (crate::mailbox::ExitReason::Panic, Some(format!("join_error: {:?}", e)))
+                    } else {
+                        (crate::mailbox::ExitReason::Other("join_error".to_string()), Some(format!("join_error: {:?}", e)))
+                    }
+                }
+            };
 
             mailboxes2.remove(&pid);
             supervisor2.notify_exit(pid);
@@ -259,8 +349,8 @@ impl Runtime {
             let linked = supervisor2.linked_pids(pid);
             for lp in linked {
                 if let Some(sender) = mailboxes2.get(&lp) {
-                    let _ =
-                        sender.send(mailbox::Message::System(mailbox::SystemMessage::Exit(pid)));
+                    let info = crate::mailbox::ExitInfo { from: pid, reason: reason.clone(), metadata: meta.clone() };
+                    let _ = sender.send(mailbox::Message::System(mailbox::SystemMessage::Exit(info)));
                 }
             }
         });
@@ -294,7 +384,18 @@ impl Runtime {
                 }
             });
 
-            let _ = actor_handle.await;
+            let res = actor_handle.await;
+
+            let (reason, meta) = match res {
+                Ok(_) => (crate::mailbox::ExitReason::Normal, None),
+                Err(e) => {
+                    if e.is_panic() {
+                        (crate::mailbox::ExitReason::Panic, Some(format!("join_error: {:?}", e)))
+                    } else {
+                        (crate::mailbox::ExitReason::Other("join_error".to_string()), Some(format!("join_error: {:?}", e)))
+                    }
+                }
+            };
 
             mailboxes2.remove(&pid);
             supervisor2.notify_exit(pid);
@@ -303,8 +404,8 @@ impl Runtime {
             let linked = supervisor2.linked_pids(pid);
             for lp in linked {
                 if let Some(sender) = mailboxes2.get(&lp) {
-                    let _ =
-                        sender.send(mailbox::Message::System(mailbox::SystemMessage::Exit(pid)));
+                    let info = crate::mailbox::ExitInfo { from: pid, reason: reason.clone(), metadata: meta.clone() };
+                    let _ = sender.send(mailbox::Message::System(mailbox::SystemMessage::Exit(info)));
                 }
             }
         });
@@ -336,7 +437,18 @@ impl Runtime {
                 }
             });
 
-            let _ = actor_handle.await;
+            let res = actor_handle.await;
+
+            let (reason, meta) = match res {
+                Ok(_) => (crate::mailbox::ExitReason::Normal, None),
+                Err(e) => {
+                    if e.is_panic() {
+                        (crate::mailbox::ExitReason::Panic, Some(format!("join_error: {:?}", e)))
+                    } else {
+                        (crate::mailbox::ExitReason::Other("join_error".to_string()), Some(format!("join_error: {:?}", e)))
+                    }
+                }
+            };
 
             mailboxes2.remove(&pid);
             supervisor2.notify_exit(pid);
@@ -345,8 +457,8 @@ impl Runtime {
             let linked = supervisor2.linked_pids(pid);
             for lp in linked {
                 if let Some(sender) = mailboxes2.get(&lp) {
-                    let _ =
-                        sender.send(mailbox::Message::System(mailbox::SystemMessage::Exit(pid)));
+                    let info = crate::mailbox::ExitInfo { from: pid, reason: reason.clone(), metadata: meta.clone() };
+                    let _ = sender.send(mailbox::Message::System(mailbox::SystemMessage::Exit(info)));
                 }
             }
         });
@@ -385,6 +497,11 @@ impl Runtime {
         } else {
             Err(msg)
         }
+    }
+
+    /// Return the number of queued user messages for the actor with `pid`.
+    pub fn mailbox_size(&self, pid: Pid) -> Option<usize> {
+        self.mailboxes.get(&pid).map(|s| s.len())
     }
 
     pub fn is_alive(&self, pid: Pid) -> bool {

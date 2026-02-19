@@ -3,13 +3,31 @@
 
 use bytes::Bytes;
 use std::collections::VecDeque;
+use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
 use tokio::sync::mpsc;
 
 /// Message is an envelope that can be either a user payload (binary blob)
 /// or a system message (e.g., exit notifications).
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ExitReason {
+    Normal,
+    Panic,
+    Timeout,
+    Killed,
+    Oom,
+    Other(String),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExitInfo {
+    pub from: u64,
+    pub reason: ExitReason,
+    pub metadata: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SystemMessage {
-    Exit(u64),
+    Exit(ExitInfo),
     /// Hot Swap signal containing the raw pointer (usize)
     /// to the new handler function / closure.
     HotSwap(usize),
@@ -32,6 +50,8 @@ pub enum Message {
 pub struct MailboxSender {
     tx_user: mpsc::UnboundedSender<Bytes>,
     tx_sys: mpsc::UnboundedSender<SystemMessage>,
+    /// Count of user messages currently queued (including those in channel and stash).
+    counter: Arc<AtomicUsize>,
 }
 
 /// Receiver half of a mailbox.
@@ -39,18 +59,21 @@ pub struct MailboxReceiver {
     rx_user: mpsc::UnboundedReceiver<Bytes>,
     rx_sys: mpsc::UnboundedReceiver<SystemMessage>,
     stash: VecDeque<Message>,
+    counter: Arc<AtomicUsize>,
 }
 
 /// Create a new mailbox channel (sender, receiver).
 pub fn channel() -> (MailboxSender, MailboxReceiver) {
     let (tx_user, rx_user) = mpsc::unbounded_channel();
     let (tx_sys, rx_sys) = mpsc::unbounded_channel();
+    let counter = Arc::new(AtomicUsize::new(0));
     (
-        MailboxSender { tx_user, tx_sys },
+        MailboxSender { tx_user, tx_sys, counter: counter.clone() },
         MailboxReceiver {
             rx_user,
             rx_sys,
             stash: VecDeque::new(),
+            counter: counter.clone(),
         },
     )
 }
@@ -60,10 +83,16 @@ impl MailboxSender {
     pub fn send(&self, msg: Message) -> Result<(), Message> {
         match msg {
             Message::User(b) => {
+                // Increment counter first to represent the enqueued message.
+                self.counter.fetch_add(1, Ordering::SeqCst);
                 let backup = Message::User(b.clone());
                 match self.tx_user.send(b) {
                     Ok(()) => Ok(()),
-                    Err(_) => Err(backup),
+                    Err(_) => {
+                        // Rollback counter on failure to send.
+                        self.counter.fetch_sub(1, Ordering::SeqCst);
+                        Err(backup)
+                    }
                 }
             }
             Message::System(s) => {
@@ -78,10 +107,14 @@ impl MailboxSender {
 
     /// Convenience: send user bytes directly.
     pub fn send_user_bytes(&self, b: Bytes) -> Result<(), Bytes> {
+        self.counter.fetch_add(1, Ordering::SeqCst);
         let backup = b.clone();
         match self.tx_user.send(b) {
             Ok(()) => Ok(()),
-            Err(_) => Err(backup),
+            Err(_) => {
+                self.counter.fetch_sub(1, Ordering::SeqCst);
+                Err(backup)
+            }
         }
     }
 
@@ -92,6 +125,11 @@ impl MailboxSender {
             Ok(()) => Ok(()),
             Err(_) => Err(backup),
         }
+    }
+
+    /// Return the number of user messages currently queued for this mailbox.
+    pub fn len(&self) -> usize {
+        self.counter.load(Ordering::SeqCst)
     }
 }
 
@@ -114,6 +152,10 @@ impl MailboxReceiver {
 
         // If there are deferred user messages, deliver them before awaiting new ones.
         if let Some(front) = self.stash.pop_front() {
+            // If returning a user message from the stash, decrement the counter
+            if matches!(front, Message::User(_)) {
+                self.counter.fetch_sub(1, Ordering::SeqCst);
+            }
             return Some(front);
         }
 
@@ -123,7 +165,11 @@ impl MailboxReceiver {
                 sys.map(Message::System)
             }
             user = self.rx_user.recv() => {
-                user.map(Message::User)
+                user.map(|b| {
+                    // We're about to deliver a user message to the caller; decrement count.
+                    self.counter.fetch_sub(1, Ordering::SeqCst);
+                    Message::User(b)
+                })
             }
         }
     }
@@ -145,10 +191,17 @@ impl MailboxReceiver {
 
         // Deliver deferred user messages first, then try underlying channel.
         if let Some(front) = self.stash.pop_front() {
+            if matches!(front, Message::User(_)) {
+                self.counter.fetch_sub(1, Ordering::SeqCst);
+            }
             return Some(front);
         }
 
-        self.rx_user.try_recv().ok().map(Message::User)
+        self.rx_user.try_recv().ok().map(|b| {
+            // delivering directly from channel; decrement counter
+            self.counter.fetch_sub(1, Ordering::SeqCst);
+            Message::User(b)
+        })
     }
 
     /// Selective receive: await until a message matching `matcher` arrives.
@@ -160,7 +213,11 @@ impl MailboxReceiver {
     {
         // First, search stash for a matching message (preserve ordering).
         if let Some(idx) = self.stash.iter().position(|m| matcher(m)) {
-            return self.stash.remove(idx);
+            let m = self.stash.remove(idx);
+            if let Some(Message::User(_)) = m.as_ref() {
+                self.counter.fetch_sub(1, Ordering::SeqCst);
+            }
+            return m;
         }
 
         loop {
@@ -196,8 +253,11 @@ impl MailboxReceiver {
                         Some(b) => {
                             let m = Message::User(b);
                             if matcher(&m) {
+                                // delivering to caller
+                                self.counter.fetch_sub(1, Ordering::SeqCst);
                                 return Some(m);
                             } else {
+                                // keep in stash; count stays the same
                                 self.stash.push_back(m);
                                 continue;
                             }
