@@ -2,7 +2,7 @@
 
 ![Myrmidon Banner](https://capsule-render.vercel.app/api?type=waving&color=0:000000,100:2E3440&height=220&section=header&text=Myrmidon&fontSize=90&fontColor=FFFFFF&animation=fadeIn&fontAlignY=35&rotate=-2&stroke=4C566A&strokeWidth=2&desc=Distributed%20Polyglot%20Actor%20Runtime&descSize=20&descAlignY=60)
 
-![Version](https://img.shields.io/badge/version-0.1.2-blue.svg?style=for-the-badge)
+![Version](https://img.shields.io/badge/version-0.1.3-blue.svg?style=for-the-badge)
 ![Language](https://img.shields.io/badge/language-Rust%20%7C%20Python%20%7C%20Node.js-orange.svg?style=for-the-badge&logo=rust)
 ![License](https://img.shields.io/badge/license-AGPL_3.0-green.svg?style=for-the-badge)
 ![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20Windows%20%7C%20macOS%20%7C%20Android-lightgrey.svg?style=for-the-badge&logo=linux)
@@ -24,15 +24,16 @@ Unlike standard message queues or microservice frameworks, Myrmidon implements a
 ## Core Capabilities
 
 ### ⚡ Hybrid Actor Model (Push & Pull)
-Myrmidon supports two distinct actor patterns across both Python and Node.js:
-* **Push Actors (Default):** Extremely lightweight. Rust "pushes" messages to a callback (Python Function or JS `ThreadSafeFunction`) only when data arrives. Zero idle overhead; ideal for high-throughput workers.
-* **Pull Actors (Mailbox):** Specialized `async/await` actors that "pull" messages from a `Mailbox`. 
-    * **Python:** Runs inside a dedicated `asyncio` loop.
+Myrmidon supports two distinct actor patterns to balance throughput and logic complexity:
+* **Push Actors (Green Threads):** Extremely lightweight. Rust "pushes" messages to a callback only when data arrives.
+    * **Ideal for:** High-throughput workers (100k+ concurrent), stateless processing, I/O handling.
+* **Pull Actors (OS Threads):** Specialized blocking actors that "pull" messages from a `Mailbox`.
+    * **Python:** Runs in a **dedicated OS thread**. Blocks on `recv()` (releasing the GIL), acting like a true Erlang/Go process. Zero `asyncio` overhead.
     * **Node.js:** Integrates with the V8 Event Loop via Promises.
 
 ### ⚡ Reduction-Based Scheduler
 Inspired by the BEAM (Erlang VM), Myrmidon uses a **Cooperative Reduction Scheduler**.
-* **Fairness:** Every actor is assigned a "reduction budget." Once exhausted, the runtime automatically yields the thread to ensure no single actor can starve the system.
+* **Fairness:** Every actor is assigned a "reduction budget." Once exhausted, the runtime automatically yields to ensure no single actor can starve the system.
 * **Pre-emptive Feel:** Provides the responsiveness of pre-emptive multitasking with the efficiency of async/await.
 
 ### 🔄 Atomic Hot-Code Swapping
@@ -42,7 +43,7 @@ Update your application logic while it is running.
 
 ### 🌐 Global Service Discovery (Phase 7 Enhanced)
 Actors are first-class citizens of the network.
-* **Name Registry:** Register actors with human-readable strings (e.g., `"auth-provider"`) instead of tracking numeric PIDs.
+* **Name Registry:** Register actors with human-readable strings (e.g., `"auth-provider"`) using `register`/`unregister` and look them up via `whereis`.
 * **Async Discovery:** Resolve remote service PIDs using native `await` (Python) or Promises (Node.js) without blocking the runtime.
 * **Location Transparency:** Send messages to actors whether they reside on the local CPU or a server across the globe.
 
@@ -57,12 +58,10 @@ Built-in fault tolerance modeled after the "Let it Crash" philosophy.
 ## Technical Deep Dive
 
 ### The Actor Lifecycle
-Myrmidon actors are extremely lightweight, consuming only a few kilobytes of RAM. 
+Myrmidon actors are extremely lightweight, but the implementation differs by type:
 
-1. **Spawn:** An actor is initialized with a mailbox and a PID from the Slab Allocator.
-2. **Execute:** The scheduler executes the actor's handler until its reduction budget hits zero.
-3. **Message Loop:** Actors remain suspended until a message arrives in their lock-free MPSC mailbox.
-4. **Exit:** Upon completion or failure, the Supervisor cleans up the PID and notifies any linked observers.
+1. **Push Actors:** Purely state-machine driven. They consume ~2KB of RAM and exist only as futures in the Tokio runtime.
+2. **Pull Actors (Python):** Allocated a dedicated stack and OS thread (via Tokio's blocking pool). They are heavier but allow for straightforward, blocking, synchronous logic without "colored functions" (async/await).
 
 ### Distributed Mesh Protocol
 Myrmidon uses a proprietary length-prefixed binary protocol over TCP for inter-node communication.
@@ -77,8 +76,7 @@ Myrmidon uses a proprietary length-prefixed binary protocol over TCP for inter-n
 ### Memory Safety & FFI
 Myrmidon bridges the gap between Rust’s memory safety and dynamic languages using **PyO3** (Python) and **N-API** (Node.js):
 * **Membrane Hardening:** The runtime uses `block_in_place` and `ThreadSafeFunction` queues to safely handle synchronous calls from within asynchronous Rust contexts.
-* **GIL & V8 Integration:** * **Python:** Manages the GIL to ensure Rust networking threads never block Python execution.
-    * **Node.js:** Respects the single-threaded Event Loop by offloading actor logic to the Libuv queue while keeping the heavy lifting in Rust threads.
+* **GIL Management:** * Python `recv()` calls release the GIL, allowing other threads to run in parallel while the actor waits for messages.
 * **Atomic RwLocks:** Actor behaviors are protected by thread-safe pointer swaps, ensuring hot-swapping is thread-safe.
 
 ---
@@ -124,7 +122,7 @@ Myrmidon provides a unified API across both supported languages.
 
 ### 1. High-Performance Push Actors (Recommended)
 
-Use `spawn` for maximum throughput. Rust owns the scheduling and only invokes the guest language when a message arrives.
+Use `spawn` for maximum throughput (100k+ actors). Rust owns the scheduling and only invokes the guest language when a message arrives.
 
 #### Python
 
@@ -135,7 +133,7 @@ rt = myrmidon.Runtime()
 def fast_worker(msg):
     print(f"Processed: {msg}")
 
-# Spawn 1000 workers instantly
+# Spawn 1000 workers instantly (Green Threads)
 for _ in range(1000):
     rt.spawn(fast_worker, budget=50)
 
@@ -158,28 +156,31 @@ for (let i = 0; i < 1000; i++) {
 
 ```
 
-### 2. Async Pull Actors (Orchestration)
+### 2. Synchronous Pull Actors (Erlang Style)
 
-Use `spawn_with_mailbox` for complex logic that requires `await`, timers, or specific message ordering.
+Use `spawn_with_mailbox` for complex logic where you want to block and wait for specific messages. **No async/await required in Python.**
 
 #### Python
 
 ```python
-async def saga_coordinator(mailbox):
-    msg = await mailbox.recv()
+# Runs in a dedicated OS thread. Blocking is safe.
+def saga_coordinator(mailbox):
+    # Blocks thread, releases GIL
+    msg = mailbox.recv() 
     print("Starting Saga...")
+    
     # Wait up to 5 seconds for next message
-    try:
-        confirm = await mailbox.recv(timeout=5.0)
-        if confirm: print("Confirmed")
-    except:
+    confirm = mailbox.recv(timeout=5.0)
+    if confirm: 
+        print("Confirmed")
+    else:
         print("Timed out")
 
 rt.spawn_with_mailbox(saga_coordinator, budget=100)
 
 ```
 
-#### Node.js
+#### Node.js (Promise Based)
 
 ```javascript
 const sagaCoordinator = async (mailbox) => {
@@ -199,27 +200,41 @@ rt.spawnWithMailbox(sagaCoordinator, 100);
 
 ```
 
-### 3. Async Service Discovery
+### 3. Service Discovery & Registry
 
 #### Python
 
 ```python
-async def find_and_query():
-    addr = "127.0.0.1:9000"
-    target_pid = await rt.resolve_remote_py(addr, "auth-service")
-    if target_pid:
-        rt.send_remote(addr, target_pid, b"verify_token")
+# 1. Register a local actor
+pid = rt.spawn(my_handler)
+rt.register("auth_worker", pid)
+
+# 2. Look it up later (Local)
+target = rt.whereis("auth_worker")
+
+# 3. Look it up remotely (Network)
+async def find_remote():
+    addr = "192.168.1.5:9000"
+    # Non-blocking resolution
+    remote_pid = await rt.resolve_remote_py(addr, "auth_worker")
+    if remote_pid:
+        rt.send_remote(addr, remote_pid, b"login")
 
 ```
 
 #### Node.js
 
 ```javascript
+// 1. Register
+const pid = rt.spawn(myHandler);
+rt.register("auth_worker", pid);
+
+// 2. Resolve Remote
 async function findAndQuery() {
-    const addr = "127.0.0.1:9000";
-    const targetPid = await rt.resolveRemote(addr, "auth-service");
+    const addr = "192.168.1.5:9000";
+    const targetPid = await rt.resolveRemote(addr, "auth_worker");
     if (targetPid) {
-        rt.sendRemote(addr, targetPid, Buffer.from("verify_token"));
+        rt.sendRemote(addr, targetPid, Buffer.from("login"));
     }
 }
 
@@ -271,20 +286,6 @@ rt.send(pid, b"test") # Prints "Logic B (Upgraded!)"
 
 ```
 
-#### Node.js
-
-```javascript
-const behaviorA = (msg) => console.log("Logic A");
-const behaviorB = (msg) => console.log("Logic B (Upgraded!)");
-
-const pid = rt.spawn(behaviorA, 10);
-rt.send(pid, Buffer.from("test"));
-
-rt.hotSwap(pid, behaviorB);
-rt.send(pid, Buffer.from("test"));
-
-```
-
 ---
 
 ## Platform Notes
@@ -306,7 +307,10 @@ Supported. Ensure you have the latest Microsoft C++ Build Tools installed for Py
 
 > [!IMPORTANT]
 > **Production Status:** Myrmidon is currently in **Alpha**.
-> * **Performance:** Node.js throughput is bound by the single-threaded Event Loop (~138k msgs/sec on mobile), whereas Python/Rust scales with CPU cores via the GIL release mechanics.
+> * **Performance:** >   * **Push Actors:** Scale linearly with CPU cores (100k+ actors).
+> * **Pull Actors:** Bound by OS thread limits (~500 concurrent threads default). Use for heavy logic only.
+> 
+> 
 > * The binary protocol is subject to change.
 > * Always use the `Supervisor` for critical actor lifecycles to ensure automatic recovery.
 > 
@@ -316,8 +320,8 @@ Supported. Ensure you have the latest Microsoft C++ Build Tools installed for Py
 
 <div align="center">
 
-**Author:** Seuriin ([SSL-ACTX](https://www.google.com/search?q=))
+**Author:** Seuriin ([SSL-ACTX](https://www.google.com/search?q=https://github.com/SSL-ACTX))
 
-*v0.1.2*
+*v0.1.3*
 
 </div>
