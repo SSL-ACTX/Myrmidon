@@ -971,6 +971,10 @@ impl PyRuntime {
         self.inner.is_alive(pid)
     }
 
+    fn mailbox_size(&self, pid: u64) -> PyResult<Option<usize>> {
+        Ok(self.inner.mailbox_size(pid))
+    }
+
     fn children_count(&self) -> usize {
         self.inner.supervisor().children_count()
     }
@@ -1118,3 +1122,4 @@ pub fn make_module(py: Python) -> PyResult<Py<PyModule>> {
 
 #[cfg(feature = "pyo3")]
 pub fn init() {}
+

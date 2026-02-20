@@ -229,4 +229,8 @@ class Runtime:
         """Block until the specified actor exits."""
         self._inner.join(pid)
 
+    def mailbox_size(self, pid: int) -> Optional[int]:
+        """Return the number of queued user messages for the actor with `pid`."""
+        return self._inner.mailbox_size(pid)
+
 __all__ = ["Runtime", "PySystemMessage", "version", "allocate_buffer", "PyMailbox"]
