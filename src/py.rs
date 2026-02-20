@@ -854,6 +854,16 @@ impl PyRuntime {
         self.inner.supervisor().child_pids()
     }
 
+    fn link(&self, a: u64, b: u64) -> PyResult<()> {
+        self.inner.link(a, b);
+        Ok(())
+    }
+
+    fn unlink(&self, a: u64, b: u64) -> PyResult<()> {
+        self.inner.unlink(a, b);
+        Ok(())
+    }
+
     fn watch(&self, pid: u64, strategy: &str) -> PyResult<()> {
         use crate::supervisor::ChildSpec;
         use crate::supervisor::RestartStrategy;

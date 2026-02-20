@@ -368,36 +368,6 @@ rt.send(pid, b"test") # Prints "Logic B (Upgraded!)"
 
 ---
 
-## Platform Notes
-
-<details>
-<summary><strong>Linux / macOS / Android (Termux)</strong></summary>
-Fully supported. High performance via multi-threaded Tokio runtime.
-<em>Note: Android builds require NDK or local clang configuration.</em>
-</details>
-
-<details>
-<summary><strong>Windows</strong></summary>
-Supported. Ensure you have the latest Microsoft C++ Build Tools installed for PyO3/N-API compilation.
-</details>
-
----
-
-## Disclaimer
-
-> [!IMPORTANT]
-> **Production Status:** Myrmidon is currently in **Alpha**.
-> * **Performance:** >   * **Push Actors:** Scale linearly with CPU cores (100k+ actors).
-> * **Pull Actors:** Bound by OS thread limits (~500 concurrent threads default). Use for heavy logic only.
-> 
-> 
-> * The binary protocol is subject to change.
-> * Always use the `Supervisor` for critical actor lifecycles to ensure automatic recovery.
-> 
-> 
-
----
-
 ### Python example — toggling GIL release
 
 You can control whether push-based Python actors run their callbacks on a blocking thread
@@ -449,10 +419,41 @@ export MYRMIDON_MAX_RELEASE_GIL_THREADS=128
 export MYRMIDON_GIL_POOL_SIZE=16
 python your_app.py
 ```
+---
+
+## Platform Notes
+
+<details>
+<summary><strong>Linux / macOS / Android (Termux)</strong></summary>
+Fully supported. High performance via multi-threaded Tokio runtime.
+<em>Note: Android builds require NDK or local clang configuration.</em>
+</details>
+
+<details>
+<summary><strong>Windows</strong></summary>
+Supported. Ensure you have the latest Microsoft C++ Build Tools installed for PyO3/N-API compilation.
+</details>
+
+---
+
+## Disclaimer
+
+> [!IMPORTANT]
+> **Production Status:** Myrmidon is currently in **Alpha**.
+> * **Performance:** >   * **Push Actors:** Scale linearly with CPU cores (100k+ actors).
+> * **Pull Actors:** Bound by OS thread limits (~500 concurrent threads default). Use for heavy logic only.
+> 
+> 
+> * The binary protocol is subject to change.
+> * Always use the `Supervisor` for critical actor lifecycles to ensure automatic recovery.
+> 
+> 
+
+---
 
 <div align="center">
 
-**Author:** Seuriin ([SSL-ACTX](https://www.google.com/search?q=https://github.com/SSL-ACTX))
+**Author:** Seuriin ([SSL-ACTX](https://github.com/SSL-ACTX))
 
 *v0.1.3*
 
