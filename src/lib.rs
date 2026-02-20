@@ -275,8 +275,9 @@ impl Runtime {
         let rt_handle = Arc::new(self.clone());
         RUNTIME.spawn(async move {
             let manager = network::NetworkManager::new(rt_handle);
-            if let Err(e) = manager.start_server(&addr).await {
-                eprintln!("[Myrmidon] Network Server Error: {}", e);
+            match manager.start_server(&addr).await {
+                Ok(actual) => tracing::info!(%actual, "node is now listening for remote messages"),
+                Err(e) => eprintln!("[Myrmidon] Network Server Error: {}", e),
             }
         });
     }

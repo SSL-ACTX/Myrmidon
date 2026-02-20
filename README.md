@@ -202,6 +202,12 @@ rt.spawnWithMailbox(sagaCoordinator, 100);
 
 ### 3. Service Discovery & Registry
 
+> **Network hardening:** the underlying TCP protocol now imposes a 1 MiB
+> payload ceiling, per-operation timeouts, and diligent logging. Malformed or
+> oversized messages are dropped rather than crashing the node, and remote
+> resolution/send operations will fail fast instead of hanging indefinitely.
+
+
 #### Python
 
 ```python

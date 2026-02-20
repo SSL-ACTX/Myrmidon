@@ -7,7 +7,40 @@ use bytes::{Buf, BufMut, Bytes, BytesMut};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::time::{interval, Duration};
+use tokio::time::{interval, timeout, Duration};
+use tracing::{debug, info, warn};
+
+// protocol limits and constants ------------------------------------------------
+
+/// How large a single user payload can be before the connection is torn down.
+const MAX_PAYLOAD_LEN: usize = 1024 * 1024; // 1 MiB
+
+/// How many bytes a service name may contain when doing a remote resolve.
+const MAX_NAME_LEN: usize = 1024;
+
+/// Timeout used for each individual read/write operation.  Prevents slowloris
+/// style attacks from stalling the runtime task forever.
+const IO_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Types of messages that can appear on the wire.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+enum MessageType {
+    User = 0,
+    Resolve = 1,
+    Ping = 2,
+}
+
+impl TryFrom<u8> for MessageType {
+    type Error = ();
+    fn try_from(b: u8) -> Result<Self, Self::Error> {
+        match b {
+            0 => Ok(MessageType::User),
+            1 => Ok(MessageType::Resolve),
+            2 => Ok(MessageType::Ping),
+            _ => Err(()),
+        }
+    }
+}
 
 pub struct NetworkManager {
     runtime: Arc<crate::Runtime>,
@@ -19,89 +52,195 @@ impl NetworkManager {
     }
 
     /// Starts the TCP server for inter-node communication.
-    pub async fn start_server(&self, addr: &str) -> std::io::Result<()> {
+    ///
+    /// The return value is the actual socket address the listener bound to.
+    /// This is useful when the caller passes `"127.0.0.1:0"` and needs to know
+    /// which port the operating system selected.
+    pub async fn start_server(&self, addr: &str) -> std::io::Result<std::net::SocketAddr> {
         let listener = TcpListener::bind(addr).await?;
+        let actual_addr = listener.local_addr()?;
+        info!(%actual_addr, "network server listening");
         let rt = self.runtime.clone();
 
         tokio::spawn(async move {
-            while let Ok((mut socket, _)) = listener.accept().await {
-                let rt_inner = rt.clone();
-                tokio::spawn(async move {
-                    let mut head = [0u8; 1];
-                    while socket.read_exact(&mut head).await.is_ok() {
-                        match head[0] {
-                            0 => {
-                                // User Message: [PID:u64][LEN:u32][DATA]
-                                let mut meta = [0u8; 12];
-                                if socket.read_exact(&mut meta).await.is_err() {
-                                    break;
-                                }
-                                let mut cursor = std::io::Cursor::new(&meta);
-                                let pid = cursor.get_u64();
-                                let len = cursor.get_u32() as usize;
-                                let mut data = vec![0u8; len];
-                                if socket.read_exact(&mut data).await.is_err() {
-                                    break;
-                                }
-                                let _ = rt_inner.send(pid, Message::User(Bytes::from(data)));
+            loop {
+                match listener.accept().await {
+                    Ok((socket, peer)) => {
+                        debug!(%peer, "accepted connection");
+                        let rt_inner = rt.clone();
+                        tokio::spawn(async move {
+                            if let Err(e) = Self::handle_connection(socket, rt_inner).await {
+                                debug!(error = %e, "connection handler terminated");
                             }
-                            1 => {
-                                // Resolve Request: [LEN:u32][NAME:String] -> [PID:u64]
-                                let mut len_buf = [0u8; 4];
-                                if socket.read_exact(&mut len_buf).await.is_err() {
-                                    break;
-                                }
-                                let len = u32::from_be_bytes(len_buf) as usize;
-                                let mut name_vec = vec![0u8; len];
-                                if socket.read_exact(&mut name_vec).await.is_err() {
-                                    break;
-                                }
-                                let name = String::from_utf8_lossy(&name_vec);
-
-                                let pid = rt_inner.resolve(&name).unwrap_or(0);
-                                if socket.write_all(&pid.to_be_bytes()).await.is_err() {
-                                    break;
-                                }
-                            }
-                            2 => {
-                                // Heartbeat (Ping) -> Returns 0x03 (Pong)
-                                if socket.write_all(&[3u8]).await.is_err() {
-                                    break;
-                                }
-                            }
-                            _ => break,
-                        }
+                        });
                     }
-                });
+                    Err(e) => {
+                        warn!(error = %e, "error accepting connection, retrying");
+                        continue;
+                    }
+                }
             }
         });
-        Ok(())
+
+        Ok(actual_addr)
     }
+
+/// Helper that wraps a read operation with a timeout and converts timeout
+/// into an `std::io::Error` so callers can use the standard `?` operator.
+async fn read_exact_with_timeout(
+    socket: &mut TcpStream,
+    buf: &mut [u8],
+) -> std::io::Result<()> {
+    // `TcpStream::read_exact` was mysteriously resolving to a `usize` output
+    // in our earlier patch (likely an inference glitch), so we implement a
+    // very small manual wrapper using `read` and looping. The behaviour is
+    // identical to `AsyncReadExt::read_exact` but sidesteps any ambiguous
+    // resolution and makes the return type obvious to the compiler.
+    let mut offset = 0;
+    while offset < buf.len() {
+        let n = match timeout(IO_TIMEOUT, socket.read(&mut buf[offset..])).await {
+            Ok(Ok(0)) => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "connection closed",
+                ));
+            }
+            Ok(Ok(n)) => n,
+            Ok(Err(e)) => return Err(e),
+            Err(_) => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "read timed out",
+                ))
+            }
+        };
+        offset += n;
+    }
+    Ok(())
+}
+
+async fn write_all_with_timeout(socket: &mut TcpStream, buf: &[u8]) -> std::io::Result<()> {
+    match timeout(IO_TIMEOUT, socket.write_all(buf)).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(e)) => Err(e),
+        Err(_) => Err(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "write timed out",
+        )),
+    }
+}
+
+/// Core connection loop extracted for clarity and testability.
+async fn handle_connection(
+    mut socket: TcpStream,
+    rt: Arc<crate::Runtime>,
+) -> std::io::Result<()> {
+    let mut header = [0u8; 1];
+    while Self::read_exact_with_timeout(&mut socket, &mut header).await.is_ok() {
+        let msg_type = match MessageType::try_from(header[0]) {
+            Ok(mt) => mt,
+            Err(_) => {
+                warn!(byte = header[0], "unknown message type, closing");
+                break;
+            }
+        };
+
+        match msg_type {
+            MessageType::User => {
+                // [PID:u64][LEN:u32][DATA]
+                let mut meta = [0u8; 12];
+                if Self::read_exact_with_timeout(&mut socket, &mut meta).await.is_err() {
+                    break;
+                }
+                let mut cursor = std::io::Cursor::new(&meta);
+                let pid = cursor.get_u64();
+                let len = cursor.get_u32() as usize;
+                if len > MAX_PAYLOAD_LEN {
+                    warn!(pid, len, "payload too large, dropping connection");
+                    break;
+                }
+                let mut data = vec![0u8; len];
+                if Self::read_exact_with_timeout(&mut socket, &mut data).await.is_err() {
+                    break;
+                }
+                let _ = rt.send(pid, Message::User(Bytes::from(data)));
+            }
+            MessageType::Resolve => {
+                // [LEN:u32][NAME:String] -> [PID:u64]
+                let mut len_buf = [0u8; 4];
+                if Self::read_exact_with_timeout(&mut socket, &mut len_buf).await.is_err() {
+                    break;
+                }
+                let len = u32::from_be_bytes(len_buf) as usize;
+                if len > MAX_NAME_LEN {
+                    warn!(len, "resolve name too long, closing");
+                    break;
+                }
+                let mut name_vec = vec![0u8; len];
+                if Self::read_exact_with_timeout(&mut socket, &mut name_vec).await.is_err() {
+                    break;
+                }
+                let name = match String::from_utf8(name_vec) {
+                    Ok(s) => s,
+                    Err(_) => {
+                        warn!("invalid utf8 in resolve request");
+                        break;
+                    }
+                };
+
+                let pid = rt.resolve(&name).unwrap_or(0);
+                if Self::write_all_with_timeout(&mut socket, &pid.to_be_bytes()).await.is_err() {
+                    break;
+                }
+            }
+            MessageType::Ping => {
+                // Heartbeat (Ping) -> Returns 0x03 (Pong)
+                if Self::write_all_with_timeout(&mut socket, &[3u8]).await.is_err() {
+                    break;
+                }
+            }
+        }
+    }
+    Ok(())
+}
 
     /// Queries a remote node for a PID associated with a name.
     pub async fn resolve_remote(&self, addr: &str, name: &str) -> std::io::Result<Pid> {
-        let mut stream = TcpStream::connect(addr).await?;
-        stream.write_all(&[1u8]).await?; // Type 1: Resolve
+        debug!(%addr, %name, "resolving remote name");
+        let mut stream = timeout(IO_TIMEOUT, TcpStream::connect(addr)).await??;
+        // Type 1: Resolve
+        Self::write_all_with_timeout(&mut stream, &[MessageType::Resolve as u8]).await?;
         let name_bytes = name.as_bytes();
-        stream
-            .write_all(&(name_bytes.len() as u32).to_be_bytes())
-            .await?;
-        stream.write_all(name_bytes).await?;
+        if name_bytes.len() > MAX_NAME_LEN {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "name too long",
+            ));
+        }
+        Self::write_all_with_timeout(&mut stream, &(name_bytes.len() as u32).to_be_bytes()).await?;
+        Self::write_all_with_timeout(&mut stream, name_bytes).await?;
 
         let mut pid_buf = [0u8; 8];
-        stream.read_exact(&mut pid_buf).await?;
+        Self::read_exact_with_timeout(&mut stream, &mut pid_buf).await?;
         Ok(u64::from_be_bytes(pid_buf))
     }
 
     /// Transmits a binary payload to a remote PID.
     pub async fn send_remote(&self, addr: &str, pid: Pid, data: Bytes) -> std::io::Result<()> {
-        let mut stream = TcpStream::connect(addr).await?;
-        stream.write_all(&[0u8]).await?; // Type 0: Send
+        debug!(%addr, pid, "sending remote message");
+        if data.len() > MAX_PAYLOAD_LEN {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "payload too large",
+            ));
+        }
+        let mut stream = timeout(IO_TIMEOUT, TcpStream::connect(addr)).await??;
+        Self::write_all_with_timeout(&mut stream, &[MessageType::User as u8]).await?;
         let mut buf = BytesMut::with_capacity(12 + data.len());
         buf.put_u64(pid);
         buf.put_u32(data.len() as u32);
         buf.put(data);
-        stream.write_all(&buf).await?;
+        Self::write_all_with_timeout(&mut stream, &buf).await?;
         Ok(())
     }
 
@@ -113,23 +252,101 @@ impl NetworkManager {
             let mut tick = interval(Duration::from_millis(interval_ms));
             loop {
                 tick.tick().await;
-                let is_up = match TcpStream::connect(&addr).await {
-                    Ok(mut stream) => {
-                        if stream.write_all(&[2u8]).await.is_ok() {
+                let is_up = match timeout(IO_TIMEOUT, TcpStream::connect(&addr)).await {
+                    Ok(Ok(mut stream)) => {
+                        if Self::write_all_with_timeout(&mut stream, &[MessageType::Ping as u8]).await.is_ok() {
                             let mut pong = [0u8; 1];
-                            stream.read_exact(&mut pong).await.is_ok() && pong[0] == 3
+                            Self::read_exact_with_timeout(&mut stream, &mut pong).await.is_ok() && pong[0] == 3
                         } else {
                             false
                         }
                     }
-                    Err(_) => false,
+                    _ => false,
                 };
 
                 if !is_up {
+                    warn!(%addr, pid, "remote monitor detected node down");
                     rt.supervisor().notify_exit(pid);
                     break;
                 }
             }
         });
+    }
+}
+
+// ------ tests ---------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Runtime;
+    use bytes::BytesMut;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use tokio::net::TcpStream;
+    use tokio::time::Duration;
+
+    async fn setup_runtime_and_server() -> (Arc<Runtime>, std::net::SocketAddr) {
+        let rt = Arc::new(Runtime::new());
+        let manager = NetworkManager::new(rt.clone());
+        let addr = manager.start_server("127.0.0.1:0").await.unwrap();
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        (rt, addr)
+    }
+
+    #[tokio::test]
+    async fn oversized_payload_is_dropped_but_server_remains() {
+        let (rt, addr) = setup_runtime_and_server().await;
+
+        let counter = Arc::new(AtomicUsize::new(0));
+        let c_clone = counter.clone();
+        let pid = rt.spawn_handler_with_budget(
+            move |msg| {
+                let c_clone = c_clone.clone();
+                async move {
+                    if let Message::User(_buf) = msg {
+                        c_clone.fetch_add(1, Ordering::SeqCst);
+                    }
+                }
+            },
+            10,
+        );
+
+        // send a valid message
+        let mut stream = TcpStream::connect(&addr).await.unwrap();
+        let data = b"hello";
+        let mut buf = BytesMut::with_capacity(13 + data.len());
+        buf.put_u8(MessageType::User as u8);
+        buf.put_u64(pid);
+        buf.put_u32(data.len() as u32);
+        buf.put_slice(data);
+        stream.write_all(&buf).await.unwrap();
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(counter.load(Ordering::SeqCst), 1);
+        assert!(rt.is_alive(pid));
+
+        // send oversized message header only
+        let mut stream2 = TcpStream::connect(&addr).await.unwrap();
+        let too_big = (MAX_PAYLOAD_LEN + 1) as u32;
+        stream2.write_all(&[MessageType::User as u8]).await.unwrap();
+        stream2.write_all(&pid.to_be_bytes()).await.unwrap();
+        stream2.write_all(&too_big.to_be_bytes()).await.unwrap();
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(counter.load(Ordering::SeqCst), 1);
+
+        // server still handles a later good message
+        let mut stream3 = TcpStream::connect(&addr).await.unwrap();
+        let data2 = b"again";
+        let mut buf2 = BytesMut::with_capacity(13 + data2.len());
+        buf2.put_u8(MessageType::User as u8);
+        buf2.put_u64(pid);
+        buf2.put_u32(data2.len() as u32);
+        buf2.put_slice(data2);
+        stream3.write_all(&buf2).await.unwrap();
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(counter.load(Ordering::SeqCst), 2);
     }
 }

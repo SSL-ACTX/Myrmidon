@@ -197,7 +197,12 @@ class Runtime:
                 pass
 
     def listen(self, addr: str):
-        """Start TCP server for remote messages and name resolution."""
+        """Start TCP server for remote messages and name resolution.
+
+        The network layer uses a simple binary protocol with a 1‑MiB
+        payload limit and per-operation timeouts; malformed or oversized
+        frames are ignored to keep the node responsive.
+        """
         self._inner.listen(addr)
 
     def set_release_gil_limits(self, max_threads: int, pool_size: int):
