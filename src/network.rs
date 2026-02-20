@@ -7,10 +7,14 @@ use bytes::{Buf, BufMut, Bytes, BytesMut};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::time::{interval, timeout, Duration};
+use tokio::time::{timeout, Duration};
 use tracing::{debug, info, warn};
 
-// protocol limits and constants ------------------------------------------------
+
+/// Current binary protocol version.  Peers must match or the connection is
+/// immediately dropped.  Future releases will bump this when the wire format
+/// changes; nodes on mixed-version clusters should handle rejections gracefully.
+const PROTOCOL_VERSION: u8 = 1;
 
 /// How large a single user payload can be before the connection is torn down.
 const MAX_PAYLOAD_LEN: usize = 1024 * 1024; // 1 MiB
@@ -18,9 +22,8 @@ const MAX_PAYLOAD_LEN: usize = 1024 * 1024; // 1 MiB
 /// How many bytes a service name may contain when doing a remote resolve.
 const MAX_NAME_LEN: usize = 1024;
 
-/// Timeout used for each individual read/write operation.  Prevents slowloris
-/// style attacks from stalling the runtime task forever.
-const IO_TIMEOUT: Duration = Duration::from_secs(5);
+/// Default I/O timeout if the runtime has not overridden it.
+const DEFAULT_IO_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Types of messages that can appear on the wire.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -90,15 +93,12 @@ impl NetworkManager {
 async fn read_exact_with_timeout(
     socket: &mut TcpStream,
     buf: &mut [u8],
+    dur: Duration,
 ) -> std::io::Result<()> {
-    // `TcpStream::read_exact` was mysteriously resolving to a `usize` output
-    // in our earlier patch (likely an inference glitch), so we implement a
-    // very small manual wrapper using `read` and looping. The behaviour is
-    // identical to `AsyncReadExt::read_exact` but sidesteps any ambiguous
-    // resolution and makes the return type obvious to the compiler.
+    // like AsyncReadExt::read_exact but with an adjustable timeout value.
     let mut offset = 0;
     while offset < buf.len() {
-        let n = match timeout(IO_TIMEOUT, socket.read(&mut buf[offset..])).await {
+        let n = match timeout(dur, socket.read(&mut buf[offset..])).await {
             Ok(Ok(0)) => {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::UnexpectedEof,
@@ -119,8 +119,8 @@ async fn read_exact_with_timeout(
     Ok(())
 }
 
-async fn write_all_with_timeout(socket: &mut TcpStream, buf: &[u8]) -> std::io::Result<()> {
-    match timeout(IO_TIMEOUT, socket.write_all(buf)).await {
+async fn write_all_with_timeout(socket: &mut TcpStream, buf: &[u8], dur: Duration) -> std::io::Result<()> {
+    match timeout(dur, socket.write_all(buf)).await {
         Ok(Ok(())) => Ok(()),
         Ok(Err(e)) => Err(e),
         Err(_) => Err(std::io::Error::new(
@@ -135,8 +135,20 @@ async fn handle_connection(
     mut socket: TcpStream,
     rt: Arc<crate::Runtime>,
 ) -> std::io::Result<()> {
+    // negotiate protocol version
+    let io_timeout = rt.get_network_io_timeout();
+    let mut version = [0u8; 1];
+    if Self::read_exact_with_timeout(&mut socket, &mut version, io_timeout).await.is_err() {
+        warn!("handshake read failed, closing");
+        return Ok(());
+    }
+    if version[0] != PROTOCOL_VERSION {
+        warn!(got = version[0], expected = PROTOCOL_VERSION, "protocol version mismatch");
+        return Ok(());
+    }
+
     let mut header = [0u8; 1];
-    while Self::read_exact_with_timeout(&mut socket, &mut header).await.is_ok() {
+    while Self::read_exact_with_timeout(&mut socket, &mut header, io_timeout).await.is_ok() {
         let msg_type = match MessageType::try_from(header[0]) {
             Ok(mt) => mt,
             Err(_) => {
@@ -149,18 +161,18 @@ async fn handle_connection(
             MessageType::User => {
                 // [PID:u64][LEN:u32][DATA]
                 let mut meta = [0u8; 12];
-                if Self::read_exact_with_timeout(&mut socket, &mut meta).await.is_err() {
+                if Self::read_exact_with_timeout(&mut socket, &mut meta, io_timeout).await.is_err() {
                     break;
                 }
                 let mut cursor = std::io::Cursor::new(&meta);
                 let pid = cursor.get_u64();
                 let len = cursor.get_u32() as usize;
-                if len > MAX_PAYLOAD_LEN {
+                if len > rt.get_network_max_payload() {
                     warn!(pid, len, "payload too large, dropping connection");
                     break;
                 }
                 let mut data = vec![0u8; len];
-                if Self::read_exact_with_timeout(&mut socket, &mut data).await.is_err() {
+                if Self::read_exact_with_timeout(&mut socket, &mut data, io_timeout).await.is_err() {
                     break;
                 }
                 let _ = rt.send(pid, Message::User(Bytes::from(data)));
@@ -168,16 +180,16 @@ async fn handle_connection(
             MessageType::Resolve => {
                 // [LEN:u32][NAME:String] -> [PID:u64]
                 let mut len_buf = [0u8; 4];
-                if Self::read_exact_with_timeout(&mut socket, &mut len_buf).await.is_err() {
+                if Self::read_exact_with_timeout(&mut socket, &mut len_buf, io_timeout).await.is_err() {
                     break;
                 }
                 let len = u32::from_be_bytes(len_buf) as usize;
-                if len > MAX_NAME_LEN {
+                if len > rt.get_network_max_name_len() {
                     warn!(len, "resolve name too long, closing");
                     break;
                 }
                 let mut name_vec = vec![0u8; len];
-                if Self::read_exact_with_timeout(&mut socket, &mut name_vec).await.is_err() {
+                if Self::read_exact_with_timeout(&mut socket, &mut name_vec, io_timeout).await.is_err() {
                     break;
                 }
                 let name = match String::from_utf8(name_vec) {
@@ -189,13 +201,13 @@ async fn handle_connection(
                 };
 
                 let pid = rt.resolve(&name).unwrap_or(0);
-                if Self::write_all_with_timeout(&mut socket, &pid.to_be_bytes()).await.is_err() {
+                if Self::write_all_with_timeout(&mut socket, &pid.to_be_bytes(), io_timeout).await.is_err() {
                     break;
                 }
             }
             MessageType::Ping => {
                 // Heartbeat (Ping) -> Returns 0x03 (Pong)
-                if Self::write_all_with_timeout(&mut socket, &[3u8]).await.is_err() {
+                if Self::write_all_with_timeout(&mut socket, &[3u8], io_timeout).await.is_err() {
                     break;
                 }
             }
@@ -207,40 +219,46 @@ async fn handle_connection(
     /// Queries a remote node for a PID associated with a name.
     pub async fn resolve_remote(&self, addr: &str, name: &str) -> std::io::Result<Pid> {
         debug!(%addr, %name, "resolving remote name");
-        let mut stream = timeout(IO_TIMEOUT, TcpStream::connect(addr)).await??;
+          let io_timeout = self.runtime.get_network_io_timeout();
+          let mut stream = timeout(io_timeout, TcpStream::connect(addr)).await??;
+        // handshake
+          Self::write_all_with_timeout(&mut stream, &[PROTOCOL_VERSION], io_timeout).await?;
         // Type 1: Resolve
-        Self::write_all_with_timeout(&mut stream, &[MessageType::Resolve as u8]).await?;
+          Self::write_all_with_timeout(&mut stream, &[MessageType::Resolve as u8], io_timeout).await?;
         let name_bytes = name.as_bytes();
-        if name_bytes.len() > MAX_NAME_LEN {
+        if name_bytes.len() > self.runtime.get_network_max_name_len() {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
                 "name too long",
             ));
         }
-        Self::write_all_with_timeout(&mut stream, &(name_bytes.len() as u32).to_be_bytes()).await?;
-        Self::write_all_with_timeout(&mut stream, name_bytes).await?;
+        Self::write_all_with_timeout(&mut stream, &(name_bytes.len() as u32).to_be_bytes(), io_timeout).await?;
+        Self::write_all_with_timeout(&mut stream, name_bytes, io_timeout).await?;
 
         let mut pid_buf = [0u8; 8];
-        Self::read_exact_with_timeout(&mut stream, &mut pid_buf).await?;
+        Self::read_exact_with_timeout(&mut stream, &mut pid_buf, io_timeout).await?;
         Ok(u64::from_be_bytes(pid_buf))
     }
 
     /// Transmits a binary payload to a remote PID.
     pub async fn send_remote(&self, addr: &str, pid: Pid, data: Bytes) -> std::io::Result<()> {
         debug!(%addr, pid, "sending remote message");
-        if data.len() > MAX_PAYLOAD_LEN {
+        if data.len() > self.runtime.get_network_max_payload() {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
                 "payload too large",
             ));
         }
-        let mut stream = timeout(IO_TIMEOUT, TcpStream::connect(addr)).await??;
-        Self::write_all_with_timeout(&mut stream, &[MessageType::User as u8]).await?;
+          let io_timeout = self.runtime.get_network_io_timeout();
+          let mut stream = timeout(io_timeout, TcpStream::connect(addr)).await??;
+        // handshake
+          Self::write_all_with_timeout(&mut stream, &[PROTOCOL_VERSION], io_timeout).await?;
+          Self::write_all_with_timeout(&mut stream, &[MessageType::User as u8], io_timeout).await?;
         let mut buf = BytesMut::with_capacity(12 + data.len());
         buf.put_u64(pid);
         buf.put_u32(data.len() as u32);
         buf.put(data);
-        Self::write_all_with_timeout(&mut stream, &buf).await?;
+        Self::write_all_with_timeout(&mut stream, &buf, io_timeout).await?;
         Ok(())
     }
 
@@ -249,14 +267,23 @@ async fn handle_connection(
     pub async fn monitor_remote(&self, addr: String, pid: Pid, interval_ms: u64) {
         let rt = self.runtime.clone();
         tokio::spawn(async move {
-            let mut tick = interval(Duration::from_millis(interval_ms));
+            // use the base interval provided by the caller; backoff will
+            // adjust it on failure.
+            let mut curr = Duration::from_millis(interval_ms);
+            let base = curr;
+            let factor = rt.get_monitor_backoff_factor();
+            let max_backoff = rt.get_monitor_backoff_max();
+            let threshold = rt.get_monitor_failure_threshold();
+            let mut failures = 0;
             loop {
-                tick.tick().await;
-                let is_up = match timeout(IO_TIMEOUT, TcpStream::connect(&addr)).await {
+                tokio::time::sleep(curr).await;
+                let is_up = match timeout(rt.get_network_io_timeout(), TcpStream::connect(&addr)).await {
                     Ok(Ok(mut stream)) => {
-                        if Self::write_all_with_timeout(&mut stream, &[MessageType::Ping as u8]).await.is_ok() {
+                        // handshake with version before ping
+                        if Self::write_all_with_timeout(&mut stream, &[PROTOCOL_VERSION], rt.get_network_io_timeout()).await.is_ok() &&
+                           Self::write_all_with_timeout(&mut stream, &[MessageType::Ping as u8], rt.get_network_io_timeout()).await.is_ok() {
                             let mut pong = [0u8; 1];
-                            Self::read_exact_with_timeout(&mut stream, &mut pong).await.is_ok() && pong[0] == 3
+                            Self::read_exact_with_timeout(&mut stream, &mut pong, rt.get_network_io_timeout()).await.is_ok() && pong[0] == 3
                         } else {
                             false
                         }
@@ -265,9 +292,20 @@ async fn handle_connection(
                 };
 
                 if !is_up {
-                    warn!(%addr, pid, "remote monitor detected node down");
-                    rt.supervisor().notify_exit(pid);
-                    break;
+                    failures += 1;
+                    if failures >= threshold {
+                        warn!(%addr, pid, "remote monitor detected node down after {} failures", failures);
+                        rt.stop(pid);
+                        rt.supervisor().notify_exit(pid);
+                        break;
+                    }
+                    // exponential backoff before next attempt
+                    let next = Duration::from_secs_f64(curr.as_secs_f64() * factor);
+                    curr = if next > max_backoff { max_backoff } else { next };
+                } else {
+                    // reset on success
+                    failures = 0;
+                    curr = base;
                 }
             }
         });
@@ -314,6 +352,7 @@ mod tests {
 
         // send a valid message
         let mut stream = TcpStream::connect(&addr).await.unwrap();
+        stream.write_all(&[PROTOCOL_VERSION]).await.unwrap();
         let data = b"hello";
         let mut buf = BytesMut::with_capacity(13 + data.len());
         buf.put_u8(MessageType::User as u8);
@@ -328,6 +367,7 @@ mod tests {
 
         // send oversized message header only
         let mut stream2 = TcpStream::connect(&addr).await.unwrap();
+        stream2.write_all(&[PROTOCOL_VERSION]).await.unwrap();
         let too_big = (MAX_PAYLOAD_LEN + 1) as u32;
         stream2.write_all(&[MessageType::User as u8]).await.unwrap();
         stream2.write_all(&pid.to_be_bytes()).await.unwrap();
@@ -338,6 +378,7 @@ mod tests {
 
         // server still handles a later good message
         let mut stream3 = TcpStream::connect(&addr).await.unwrap();
+        stream3.write_all(&[PROTOCOL_VERSION]).await.unwrap();
         let data2 = b"again";
         let mut buf2 = BytesMut::with_capacity(13 + data2.len());
         buf2.put_u8(MessageType::User as u8);
@@ -348,5 +389,90 @@ mod tests {
 
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert_eq!(counter.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn protocol_version_mismatch_closes_connection() {
+        let (rt, addr) = setup_runtime_and_server().await;
+
+        // actor that would otherwise receive a message
+        let counter = Arc::new(AtomicUsize::new(0));
+        let counter_for_spawn = counter.clone();
+        let pid = rt.spawn_handler_with_budget(
+            move |msg| {
+                let c = counter_for_spawn.clone();
+                async move {
+                    if let Message::User(_buf) = msg {
+                        c.fetch_add(1, Ordering::SeqCst);
+                    }
+                }
+            },
+            1,
+        );
+
+        // craft a connection that sends wrong version
+        let mut stream = TcpStream::connect(&addr).await.unwrap();
+        stream.write_all(&[PROTOCOL_VERSION + 1]).await.unwrap();
+        // then attempt normal user frame
+        let data = b"will not be seen";
+        let mut buf = BytesMut::with_capacity(13 + data.len());
+        buf.put_u8(MessageType::User as u8);
+        buf.put_u64(pid);
+        buf.put_u32(data.len() as u32);
+        buf.put_slice(data);
+        let _ = stream.write_all(&buf).await;
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(counter.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn configurable_limits_and_timeout() {
+        let (rt, addr) = setup_runtime_and_server().await;
+        rt.set_network_max_payload(5);
+        rt.set_network_max_name_len(4);
+        rt.set_network_io_timeout(Duration::from_millis(1));
+
+        // payload limit enforced via the manager API
+        let manager = NetworkManager::new(rt.clone());
+        let err = manager.send_remote(&addr.to_string(), 0, Bytes::from_static(b"longer")).await.err();
+        assert!(err.is_some());
+
+        // name length limit
+        let res = manager.resolve_remote(&addr.to_string(), "toolong").await;
+        assert!(res.is_err());
+
+        // timeout observed: connect to a server that accepts but never responds
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let bad_addr = listener.local_addr().unwrap();
+        // spawn accept but never read
+        tokio::spawn(async move {
+            if let Ok((_stream, _)) = listener.accept().await {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+        });
+        let manager = NetworkManager::new(rt.clone());
+        let e = manager.resolve_remote(&bad_addr.to_string(), "a").await.unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::TimedOut);
+    }
+
+    #[tokio::test]
+    async fn monitor_backoff_threshold_behavior() {
+        let rt = Arc::new(Runtime::new());
+        rt.set_monitor_backoff(2.0, Duration::from_millis(50), 2);
+
+        let pid = rt.spawn_actor(|mut rx| async move { let _ = rx.recv().await; });
+        // monitor an address that doesn't exist
+        let addr = "127.0.0.1:59999".to_string();
+        let manager = NetworkManager::new(rt.clone());
+        manager.monitor_remote(addr, pid, 10).await;
+
+        // after one interval actor should still be alive
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(rt.is_alive(pid));
+
+        // after enough time for two failures, actor should be gone
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        assert!(!rt.is_alive(pid));
     }
 }

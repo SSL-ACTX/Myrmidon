@@ -26,6 +26,7 @@ use std::sync::{Arc, Mutex};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::runtime::Runtime as TokioRuntime;
+use tokio::time::Duration;
 
 /// A global, multi-threaded Tokio runtime shared by all Myrmidon instances.
 static RUNTIME: Lazy<TokioRuntime> = Lazy::new(|| {
@@ -43,6 +44,13 @@ pub struct Runtime {
     supervisor: Arc<supervisor::Supervisor>,
     observers: Arc<DashMap<Pid, Arc<Mutex<Vec<mailbox::Message>>>>>,
     network: Arc<Mutex<Option<network::NetworkManager>>>,
+    // network configuration (timeouts/limits/backoff)
+    network_io_timeout: Arc<Mutex<Duration>>,
+    network_max_payload: Arc<Mutex<usize>>,
+    network_max_name_len: Arc<Mutex<usize>>,
+    monitor_backoff_factor: Arc<Mutex<f64>>,
+    monitor_backoff_max: Arc<Mutex<Duration>>,
+    monitor_failure_threshold: Arc<Mutex<usize>>,
     registry: Arc<registry::NameRegistry>,
     /// Optional per-path supervisors (shallow supervisors keyed by path).
     path_supervisors: Arc<DashMap<String, Arc<supervisor::Supervisor>>>,
@@ -76,6 +84,12 @@ impl Runtime {
             release_gil_strict: Arc::new(Mutex::new(false)),
             timers: Arc::new(Mutex::new(HashMap::new())),
             timer_counter: Arc::new(AtomicU64::new(0)),
+            network_io_timeout: Arc::new(Mutex::new(Duration::from_secs(5))),
+            network_max_payload: Arc::new(Mutex::new(1024 * 1024)),
+            network_max_name_len: Arc::new(Mutex::new(1024)),
+            monitor_backoff_factor: Arc::new(Mutex::new(2.0)),
+            monitor_backoff_max: Arc::new(Mutex::new(Duration::from_secs(60))),
+            monitor_failure_threshold: Arc::new(Mutex::new(1)),
         };
 
         let net_manager = network::NetworkManager::new(Arc::new(rt.clone()));
@@ -185,6 +199,57 @@ impl Runtime {
     /// Resolve a human-readable name to a PID.
     pub fn resolve(&self, name: &str) -> Option<Pid> {
         self.registry.resolve(name)
+    }
+
+    /// Set the network I/O timeout used by all operations.
+    pub fn set_network_io_timeout(&self, t: Duration) {
+        *self.network_io_timeout.lock().unwrap() = t;
+    }
+
+    /// Get configured network I/O timeout.
+    pub fn get_network_io_timeout(&self) -> Duration {
+        *self.network_io_timeout.lock().unwrap()
+    }
+
+    /// Adjust maximum allowed payload length for send_remote (bytes).
+    pub fn set_network_max_payload(&self, bytes: usize) {
+        *self.network_max_payload.lock().unwrap() = bytes;
+    }
+
+    /// Get current payload limit.
+    pub fn get_network_max_payload(&self) -> usize {
+        *self.network_max_payload.lock().unwrap()
+    }
+
+    /// Adjust maximum allowed name length for remote resolve.
+    pub fn set_network_max_name_len(&self, bytes: usize) {
+        *self.network_max_name_len.lock().unwrap() = bytes;
+    }
+
+    /// Get current name length limit.
+    pub fn get_network_max_name_len(&self) -> usize {
+        *self.network_max_name_len.lock().unwrap()
+    }
+
+    /// Configure exponential backoff parameters for `monitor_remote`.
+    ///
+    /// `factor` is multiplied after each failure, capped by `max`.
+    /// `failure_threshold` is how many consecutive failures must occur before
+    /// the supervisor is notified.
+    pub fn set_monitor_backoff(&self, factor: f64, max: Duration, failure_threshold: usize) {
+        *self.monitor_backoff_factor.lock().unwrap() = factor;
+        *self.monitor_backoff_max.lock().unwrap() = max;
+        *self.monitor_failure_threshold.lock().unwrap() = failure_threshold;
+    }
+
+    pub fn get_monitor_backoff_factor(&self) -> f64 {
+        *self.monitor_backoff_factor.lock().unwrap()
+    }
+    pub fn get_monitor_backoff_max(&self) -> Duration {
+        *self.monitor_backoff_max.lock().unwrap()
+    }
+    pub fn get_monitor_failure_threshold(&self) -> usize {
+        *self.monitor_failure_threshold.lock().unwrap()
     }
 
     /// Register a hierarchical path for an actor PID.
