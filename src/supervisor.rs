@@ -1,4 +1,4 @@
-// supervisor.rs
+// src/supervisor.rs
 //! Supervisor
 //!
 //! Adds small, testable supervision behaviors used by the runtime. Each child
@@ -7,7 +7,7 @@
 //! or restart the whole supervised group (one-for-all).
 
 use crate::pid::Pid;
-use dashmap::DashMap;
+use dashmap::{DashMap, DashSet};
 use std::sync::{Arc, Mutex};
 
 /// Restart strategies supported in Phase 1.
@@ -46,6 +46,9 @@ pub struct Supervisor {
     /// Bidirectional links between PIDs. If A is linked to B, and A exits,
     /// B should receive an exit signal (delivered by the Runtime).
     links: Arc<DashMap<Pid, Vec<Pid>>>,
+    /// Tracks PIDs currently undergoing a restart to debounce duplicate exit signals
+    /// and prevent cascading `RestartAll` loops.
+    restarting: Arc<DashSet<Pid>>,
 }
 
 impl Supervisor {
@@ -55,6 +58,7 @@ impl Supervisor {
             children: Arc::new(DashMap::new()),
             errors: Arc::new(Mutex::new(Vec::new())),
             links: Arc::new(DashMap::new()),
+            restarting: Arc::new(DashSet::new()),
         }
     }
 
@@ -66,14 +70,8 @@ impl Supervisor {
     /// Remove a child from supervision.
     pub fn remove_child(&self, pid: Pid) {
         self.children.remove(&pid);
-        // cleanup any links involving this pid
-        if let Some((_, v)) = self.links.remove(&pid) {
-            for other in v {
-                if let Some(mut entry) = self.links.get_mut(&other) {
-                    entry.retain(|&p| p != pid);
-                }
-            }
-        }
+        self.restarting.remove(&pid);
+        self.cleanup_links_internal(pid);
     }
 
     /// Remove a bidirectional link between two PIDs.
@@ -102,14 +100,39 @@ impl Supervisor {
         self.links.entry(b).or_insert_with(Vec::new).push(a);
     }
 
-    /// Return linked pids for `pid` (snapshot).
+    /// Retrieve and remove the PIDs linked to `pid`.
+    ///
+    /// This method is destructive: it assumes the actor `pid` is dead or dying.
+    /// It removes `pid` from the links map and also removes `pid` from the
+    /// link lists of all its peers to prevent memory leaks and stale references.
     pub fn linked_pids(&self, pid: Pid) -> Vec<Pid> {
-        self.links.get(&pid).map(|v| v.clone()).unwrap_or_default()
+        if let Some((_, linked_peers)) = self.links.remove(&pid) {
+            for peer in &linked_peers {
+                if let Some(mut entry) = self.links.get_mut(peer) {
+                    entry.retain(|&p| p != pid);
+                }
+            }
+            linked_peers
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Internal helper to cleanup links without returning them.
+    fn cleanup_links_internal(&self, pid: Pid) {
+        if let Some((_, linked_peers)) = self.links.remove(&pid) {
+            for peer in linked_peers {
+                if let Some(mut entry) = self.links.get_mut(&peer) {
+                    entry.retain(|&p| p != pid);
+                }
+            }
+        }
     }
 
     /// Stop watching a pid.
     pub fn unwatch(&self, pid: Pid) {
         self.children.remove(&pid);
+        self.restarting.remove(&pid);
     }
 
     /// Query helpers for tests/observability.
@@ -133,120 +156,160 @@ impl Supervisor {
     /// Called by the runtime when a child exits. Applies the restart strategy
     /// recorded in the child's `ChildSpec` (if any).
     pub fn notify_exit(&self, pid: Pid) {
-        // If the PID is not in our map, it might be a stale notification from
-        // an actor that was already replaced during a RestartAll event.
+        // Debounce: If we are already restarting this PID, safely ignore the duplicate exit signal.
+        if !self.restarting.insert(pid) {
+            return;
+        }
+
         let spec = match self.children.get(&pid) {
             Some(s) => s.clone(),
-            None => return,
+            None => {
+                self.restarting.remove(&pid);
+                return;
+            }
         };
+
         tracing::info!(
             "[supervisor] notify_exit(pid={}) strategy={:?}",
             pid,
             spec.strategy
         );
 
-        // Perform restart logic asynchronously to avoid blocking the caller and
-        // to allow introducing backoff/retries for flaky factories.
         let children = self.children.clone();
         let errors = self.errors.clone();
-        let spec_clone = spec.clone();
         let links = self.links.clone();
+        let restarting = self.restarting.clone();
 
-        tokio::spawn(async move {
-            // retry policy: up to 3 attempts with exponential backoff starting at 100ms
-            let mut attempts: u32;
-            let max_attempts = 3u32;
-            let mut backoff_ms = 100u64;
+        match spec.strategy {
+            RestartStrategy::RestartAll => {
+                let all: Vec<(Pid, ChildSpec)> = children
+                    .iter()
+                    .map(|kv| (*kv.key(), kv.value().clone()))
+                    .collect();
 
-            // Helper to clean up links for a dead PID
-            let cleanup_links = |dead_pid: Pid, links_map: &DashMap<Pid, Vec<Pid>>| {
-                if let Some((_, v)) = links_map.remove(&dead_pid) {
-                    for other in v {
-                        if let Some(mut entry) = links_map.get_mut(&other) {
-                            entry.retain(|&p| p != dead_pid);
-                        }
-                    }
+                // Mark the entire group as restarting to prevent cascaded exit signals 
+                // from spawning redundant RestartAll waves.
+                for (p, _) in &all {
+                    restarting.insert(*p);
                 }
-            };
 
-            match spec_clone.strategy {
-                RestartStrategy::RestartAll => {
-                    // Capture current specs/pids
-                    let all: Vec<(Pid, ChildSpec)> = children
-                        .iter()
-                        .map(|kv| (*kv.key(), kv.value().clone()))
-                        .collect();
-                    // clear map to avoid nested restarts
-                    for (k, _) in &all {
-                        children.remove(k);
-                    }
+                // Spawn concurrent restart tasks without dropping the supervisor's registry count.
+                for (orig_pid, s) in all {
+                    let children_clone = children.clone();
+                    let errors_clone = errors.clone();
+                    let links_clone = links.clone();
+                    let restarting_clone = restarting.clone();
 
-                    for (orig_pid, s) in all {
-                        // Cleanup links for the old PID as it is now dead
-                        cleanup_links(orig_pid, &links);
+                    tokio::spawn(async move {
+                        let mut attempts = 0;
+                        let max_attempts = 3;
+                        let mut backoff_ms = 100;
 
-                        attempts = 0;
                         loop {
                             attempts += 1;
                             match (s.factory)() {
                                 Ok(new_pid) => {
-                                    children.insert(new_pid, s.clone());
+                                    // Atomic swap: insert the new PID, then clean up the old one.
+                                    children_clone.insert(new_pid, s.clone());
+                                    children_clone.remove(&orig_pid);
+                                    
+                                    if let Some((_, v)) = links_clone.remove(&orig_pid) {
+                                        for other in v {
+                                            if let Some(mut entry) = links_clone.get_mut(&other) {
+                                                entry.retain(|&p| p != orig_pid);
+                                            }
+                                        }
+                                    }
+                                    restarting_clone.remove(&orig_pid);
                                     break;
                                 }
                                 Err(err) => {
                                     tracing::error!("[supervisor] factory failed during RestartAll attempt={} err={}", attempts, err);
                                     {
-                                        let mut guard = errors.lock().unwrap();
+                                        let mut guard = errors_clone.lock().unwrap();
                                         guard.push(err.clone());
-                                    } // drop guard before awaiting
+                                    } 
+                                    
                                     if attempts >= max_attempts {
+                                        tracing::error!("[supervisor] child permanently dropped after exhausting retries (RestartAll) err={}", err);
+                                        children_clone.remove(&orig_pid);
+                                        if let Some((_, v)) = links_clone.remove(&orig_pid) {
+                                            for other in v {
+                                                if let Some(mut entry) = links_clone.get_mut(&other) {
+                                                    entry.retain(|&p| p != orig_pid);
+                                                }
+                                            }
+                                        }
+                                        restarting_clone.remove(&orig_pid);
                                         break;
                                     }
-                                    tokio::time::sleep(std::time::Duration::from_millis(
-                                        backoff_ms,
-                                    ))
-                                    .await;
+                                    
+                                    tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
                                     backoff_ms = backoff_ms.saturating_mul(2);
                                 }
                             }
                         }
-                    }
-                }
-                RestartStrategy::RestartOne => {
-                    // Remove the specific failed PID (if present) and attempt restart with retries
-                    if let Some((_, s)) = children.remove(&pid) {
-                        // Cleanup links for the dead PID
-                        cleanup_links(pid, &links);
-
-                        attempts = 0;
-                        loop {
-                            attempts += 1;
-                            match (s.factory)() {
-                                Ok(new_pid) => {
-                                    children.insert(new_pid, s.clone());
-                                    break;
-                                }
-                                Err(err) => {
-                                    tracing::error!("[supervisor] factory failed during RestartOne attempt={} err={}", attempts, err);
-                                    {
-                                        let mut guard = errors.lock().unwrap();
-                                        guard.push(err.clone());
-                                    } // drop guard before awaiting
-                                    if attempts >= max_attempts {
-                                        break;
-                                    }
-                                    tokio::time::sleep(std::time::Duration::from_millis(
-                                        backoff_ms,
-                                    ))
-                                    .await;
-                                    backoff_ms = backoff_ms.saturating_mul(2);
-                                }
-                            }
-                        }
-                    }
+                    });
                 }
             }
-        });
+            RestartStrategy::RestartOne => {
+                let children_clone = children.clone();
+                let errors_clone = errors.clone();
+                let links_clone = links.clone();
+                let restarting_clone = restarting.clone();
+
+                tokio::spawn(async move {
+                    let mut attempts = 0;
+                    let max_attempts = 3;
+                    let mut backoff_ms = 100;
+
+                    loop {
+                        attempts += 1;
+                        match (spec.factory)() {
+                            Ok(new_pid) => {
+                                // Atomic swap
+                                children_clone.insert(new_pid, spec.clone());
+                                children_clone.remove(&pid);
+
+                                if let Some((_, v)) = links_clone.remove(&pid) {
+                                    for other in v {
+                                        if let Some(mut entry) = links_clone.get_mut(&other) {
+                                            entry.retain(|&p| p != pid);
+                                        }
+                                    }
+                                }
+                                restarting_clone.remove(&pid);
+                                break;
+                            }
+                            Err(err) => {
+                                tracing::error!("[supervisor] factory failed during RestartOne attempt={} err={}", attempts, err);
+                                {
+                                    let mut guard = errors_clone.lock().unwrap();
+                                    guard.push(err.clone());
+                                } 
+                                
+                                if attempts >= max_attempts {
+                                    tracing::error!("[supervisor] child permanently dropped after exhausting retries (RestartOne) err={}", err);
+                                    children_clone.remove(&pid);
+                                    if let Some((_, v)) = links_clone.remove(&pid) {
+                                        for other in v {
+                                            if let Some(mut entry) = links_clone.get_mut(&other) {
+                                                entry.retain(|&p| p != pid);
+                                            }
+                                        }
+                                    }
+                                    restarting_clone.remove(&pid);
+                                    break;
+                                }
+                                
+                                tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
+                                backoff_ms = backoff_ms.saturating_mul(2);
+                            }
+                        }
+                    }
+                });
+            }
+        }
     }
 }
 
@@ -277,7 +340,7 @@ mod tests {
         };
         s.add_child(42, spec);
 
-        // Notify exit: factory should fail and the children map should be empty
+        // Notify exit: factory should fail and the children map should eventually be empty
         s.notify_exit(42);
 
         // Wait for the supervisor task to process the failure.
