@@ -7,7 +7,16 @@ use std::time::Duration;
 #[tokio::test]
 async fn test_path_supervisor_restart_one() {
     Python::with_gil(|py| {
+        // Create the module in memory
         let module = myrmidon::py::make_module(py).expect("make_module");
+        
+        // Inject the module into Python's global sys.modules cache.
+        let sys = py.import("sys").expect("Failed to import sys");
+        sys.getattr("modules")
+            .expect("Failed to get sys.modules")
+            .set_item("myrmidon", &module)
+            .expect("Failed to inject myrmidon into sys.modules");
+
         let rt_type = module.as_ref(py).getattr("PyRuntime").unwrap();
         let rt = rt_type.call0().unwrap();
 
@@ -27,7 +36,7 @@ async fn test_path_supervisor_restart_one() {
             r#"
 def factory():
     import myrmidon
-    rt = myrmidon.Runtime()
+    rt = myrmidon.PyRuntime()
     return rt.spawn_with_path_observed(10, "/svc/restart/one")
 "#,
             None,
