@@ -33,4 +33,74 @@ impl NameRegistry {
     pub fn unregister(&self, name: &str) {
         self.names.remove(name);
     }
+
+    /// List registered entries whose path begins with `prefix`.
+    /// If `prefix` is empty or "/" this returns all entries.
+    pub fn list_children(&self, prefix: &str) -> Vec<(String, Pid)> {
+        let mut out = Vec::new();
+        let norm = if prefix.is_empty() || prefix == "/" {
+            String::new()
+        } else if prefix.ends_with('/') {
+            prefix.trim_end_matches('/').to_string()
+        } else {
+            prefix.to_string()
+        };
+
+        let matcher = if norm.is_empty() { None } else { Some(format!("{}/", norm)) };
+
+        for r in self.names.iter() {
+            let key = r.key();
+            if let Some(ref m) = matcher {
+                if key.starts_with(m) {
+                    out.push((key.clone(), *r.value()));
+                }
+            } else {
+                out.push((key.clone(), *r.value()));
+            }
+        }
+
+        out
+    }
+
+    /// List only direct children one level below `prefix`.
+    /// For prefix `/a/b` entries returned will be `/a/b/child` but not `/a/b/child/grand`.
+    pub fn list_direct_children(&self, prefix: &str) -> Vec<(String, Pid)> {
+        let mut out = Vec::new();
+        let norm = if prefix.is_empty() || prefix == "/" {
+            String::new()
+        } else if prefix.ends_with('/') {
+            prefix.trim_end_matches('/').to_string()
+        } else {
+            prefix.to_string()
+        };
+
+        let matcher = if norm.is_empty() { 
+            String::new()
+        } else { 
+            format!("{}/", norm)
+        };
+
+        for r in self.names.iter() {
+            let key = r.key();
+            if !matcher.is_empty() {
+                if !key.starts_with(&matcher) {
+                    continue;
+                }
+                let tail = &key[matcher.len()..];
+                if tail.contains('/') {
+                    continue; // deeper than one level
+                }
+                out.push((key.clone(), *r.value()));
+            } else {
+                // root: direct children are top-level entries without additional '/'
+                let tail = if key.starts_with('/') { &key[1..] } else { &key[..] };
+                if tail.contains('/') {
+                    continue;
+                }
+                out.push((key.clone(), *r.value()));
+            }
+        }
+
+        out
+    }
 }

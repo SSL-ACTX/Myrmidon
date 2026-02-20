@@ -72,6 +72,64 @@ class Runtime:
         """Alias for resolve (Erlang style)."""
         return self._inner.whereis(name)
 
+    # --- Path-based registry helpers ---
+    def register_path(self, path: str, pid: int):
+        """Register an actor under a hierarchical path (e.g. /system/service/one)."""
+        self._inner.register_path(path, pid)
+
+    def unregister_path(self, path: str):
+        """Remove a hierarchical path registration."""
+        self._inner.unregister_path(path)
+
+    def whereis_path(self, path: str) -> Optional[int]:
+        """Resolve an exact hierarchical path to a PID."""
+        return self._inner.whereis_path(path)
+
+    def list_children(self, prefix: str):
+        """List registered entries under a path prefix. Returns list of (path, pid)."""
+        return self._inner.list_children(prefix)
+
+    def list_children_direct(self, prefix: str):
+        """List only direct children one level below `prefix`. Returns list of (path, pid)."""
+        return self._inner.list_children_direct(prefix)
+
+    def watch_path(self, prefix: str):
+        """Register (shallow) watch on all direct children under `prefix`."""
+        self._inner.watch_path(prefix)
+
+    def children_count(self) -> int:
+        """Return number of children registered with the supervisor."""
+        return self._inner.children_count()
+
+    def child_pids(self):
+        """Return a list of child PIDs currently registered with the supervisor."""
+        return self._inner.child_pids()
+
+    # --- Path-scoped supervisors ---
+    def create_path_supervisor(self, path: str):
+        """Create a path-scoped supervisor object for `path`."""
+        self._inner.create_path_supervisor(path)
+
+    def remove_path_supervisor(self, path: str):
+        """Remove the path-scoped supervisor for `path` if present."""
+        self._inner.remove_path_supervisor(path)
+
+    def path_supervisor_watch(self, path: str, pid: int):
+        """Register `pid` with the path-scoped supervisor if it exists, otherwise falls back to global supervise."""
+        self._inner.path_supervisor_watch(path, pid)
+
+    def path_supervisor_children(self, path: str):
+        """Return child PIDs supervised by the path-scoped supervisor."""
+        return self._inner.path_supervisor_children(path)
+
+    def spawn_with_path_observed(self, budget: int, path: str) -> int:
+        """Spawn an observed handler and register it under `path`.
+
+        This spawns an observed actor (for monitoring/debugging) and registers
+        it at the given hierarchical `path`.
+        """
+        return self._inner.spawn_with_path_observed(budget, path)
+
     def resolve_remote(self, addr: str, name: str) -> Optional[int]:
         """Query a remote node for a PID by name (Blocking)."""
         return self._inner.resolve_remote(addr, name)

@@ -9,20 +9,20 @@
 * [x] **Selective Receive**
   Actors can pattern-match and defer messages until a desired one arrives.
 
-* [ ] **Exit Reasons & Crash Metadata**
+* [x] **Exit Reasons & Crash Metadata**
   Structured failure reasons (`:panic`, `:timeout`, `:killed`, `:oom`, etc.).
 
-* [ ] **Mailbox Introspection**
+* [x] **Mailbox Introspection**
   Query mailbox size / pressure for adaptive behavior.
 
-* [ ] **Actor-Local Timers**
+* [x] **Actor-Local Timers**
   Timers belong to actors (`send_after`, `interval`) — no global sleeps.
 
 ---
 
 ## 🔵 Supervision & Structure (Akka-Inspired)
 
-* [ ] **Actor Hierarchies / Paths**
+* [x] **Actor Hierarchies / Paths**
   Structured actor paths (`/system/http/router/worker-17`).
 
 * [ ] **Structured Concurrency**

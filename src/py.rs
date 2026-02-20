@@ -35,7 +35,81 @@ fn populate_module(m: &PyModule) -> PyResult<()> {
     m.add_class::<PyMailbox>()?;
     #[cfg(feature = "pyo3")]
     m.add_function(wrap_pyfunction!(allocate_buffer, m)?)?;
+    // Path-based registry helpers (module-level convenience wrappers)
+    m.add_function(wrap_pyfunction!(register_path, m)?)?;
+    m.add_function(wrap_pyfunction!(unregister_path, m)?)?;
+    m.add_function(wrap_pyfunction!(whereis_path, m)?)?;
+    m.add_function(wrap_pyfunction!(list_children, m)?)?;
+    m.add_function(wrap_pyfunction!(spawn_with_path_observed, m)?)?;
+    m.add_function(wrap_pyfunction!(list_children_direct, m)?)?;
+    m.add_function(wrap_pyfunction!(watch_path, m)?)?;
+    m.add_function(wrap_pyfunction!(create_path_supervisor, m)?)?;
+    m.add_function(wrap_pyfunction!(remove_path_supervisor, m)?)?;
+    m.add_function(wrap_pyfunction!(path_supervisor_watch, m)?)?;
+    m.add_function(wrap_pyfunction!(path_supervisor_children, m)?)?;
     Ok(())
+}
+
+// Module-level wrappers that accept a `PyRuntime` instance and delegate to its inner runtime.
+#[pyfunction]
+fn register_path(rt: PyRef<PyRuntime>, path: String, pid: u64) -> PyResult<()> {
+    rt.inner.register_path(path, pid);
+    Ok(())
+}
+
+#[pyfunction]
+fn unregister_path(rt: PyRef<PyRuntime>, path: String) -> PyResult<()> {
+    rt.inner.unregister_path(&path);
+    Ok(())
+}
+
+#[pyfunction]
+fn whereis_path(rt: PyRef<PyRuntime>, path: String) -> PyResult<Option<u64>> {
+    Ok(rt.inner.whereis_path(&path))
+}
+
+#[pyfunction]
+fn list_children(rt: PyRef<PyRuntime>, prefix: String) -> PyResult<Vec<(String, u64)>> {
+    Ok(rt.inner.list_children(&prefix))
+}
+
+#[pyfunction]
+fn spawn_with_path_observed(rt: PyRef<PyRuntime>, budget: usize, path: String) -> PyResult<u64> {
+    Ok(rt.inner.spawn_with_path_observed(budget, path))
+}
+
+#[pyfunction]
+fn list_children_direct(rt: PyRef<PyRuntime>, prefix: String) -> PyResult<Vec<(String, u64)>> {
+    Ok(rt.inner.list_children_direct(&prefix))
+}
+
+#[pyfunction]
+fn watch_path(rt: PyRef<PyRuntime>, prefix: String) -> PyResult<()> {
+    rt.inner.watch_path(&prefix);
+    Ok(())
+}
+
+#[pyfunction]
+fn create_path_supervisor(rt: PyRef<PyRuntime>, path: String) -> PyResult<()> {
+    rt.inner.create_path_supervisor(&path);
+    Ok(())
+}
+
+#[pyfunction]
+fn remove_path_supervisor(rt: PyRef<PyRuntime>, path: String) -> PyResult<()> {
+    rt.inner.remove_path_supervisor(&path);
+    Ok(())
+}
+
+#[pyfunction]
+fn path_supervisor_watch(rt: PyRef<PyRuntime>, path: String, pid: u64) -> PyResult<()> {
+    rt.inner.path_supervisor_watch(&path, pid);
+    Ok(())
+}
+
+#[pyfunction]
+fn path_supervisor_children(rt: PyRef<PyRuntime>, path: String) -> PyResult<Vec<u64>> {
+    Ok(rt.inner.path_supervisor_children(&path))
 }
 
 extern "C" fn capsule_destructor(capsule: *mut pyo3::ffi::PyObject) {
@@ -348,6 +422,57 @@ impl PyRuntime {
     /// Alias for resolve (Erlang style).
     fn whereis(&self, name: String) -> PyResult<Option<u64>> {
         Ok(self.inner.resolve(&name))
+    }
+
+    /// Register a hierarchical path for an actor PID.
+    fn register_path(&self, path: String, pid: u64) -> PyResult<()> {
+        self.inner.register_path(path, pid);
+        Ok(())
+    }
+
+    fn unregister_path(&self, path: String) -> PyResult<()> {
+        self.inner.unregister_path(&path);
+        Ok(())
+    }
+
+    fn whereis_path(&self, path: String) -> PyResult<Option<u64>> {
+        Ok(self.inner.whereis_path(&path))
+    }
+
+    fn list_children(&self, prefix: String) -> PyResult<Vec<(String, u64)>> {
+        Ok(self.inner.list_children(&prefix))
+    }
+
+    fn list_children_direct(&self, prefix: String) -> PyResult<Vec<(String, u64)>> {
+        Ok(self.inner.list_children_direct(&prefix))
+    }
+
+    fn watch_path(&self, prefix: String) -> PyResult<()> {
+        self.inner.watch_path(&prefix);
+        Ok(())
+    }
+
+    fn spawn_with_path_observed(&self, budget: usize, path: String) -> PyResult<u64> {
+        Ok(self.inner.spawn_with_path_observed(budget, path))
+    }
+
+    fn create_path_supervisor(&self, path: String) -> PyResult<()> {
+        self.inner.create_path_supervisor(&path);
+        Ok(())
+    }
+
+    fn remove_path_supervisor(&self, path: String) -> PyResult<()> {
+        self.inner.remove_path_supervisor(&path);
+        Ok(())
+    }
+
+    fn path_supervisor_watch(&self, path: String, pid: u64) -> PyResult<()> {
+        self.inner.path_supervisor_watch(&path, pid);
+        Ok(())
+    }
+
+    fn path_supervisor_children(&self, path: String) -> PyResult<Vec<u64>> {
+        Ok(self.inner.path_supervisor_children(&path))
     }
 
     // --- End Registry ---

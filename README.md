@@ -240,6 +240,42 @@ async function findAndQuery() {
 
 ```
 
+---
+
+### Path-Scoped Supervisors
+
+Myrmidon supports hierarchical path registrations (e.g. `/svc/payment/processor`) and allows you to create a supervisor that is scoped to a path prefix. This is useful for grouping related actors and applying supervision policies per-service or per-tenant.
+
+Key Python APIs:
+- `rt.create_path_supervisor(path)` — create a per-path supervisor instance.
+- `rt.path_supervisor_watch(path, pid)` — register an actor PID with the path supervisor.
+- `rt.path_supervisor_children(path)` — list PIDs currently supervised for the path.
+- `rt.remove_path_supervisor(path)` — remove the path supervisor.
+- `rt.spawn_with_path_observed(budget, path)` — spawn and register an observed actor under `path` (useful for testing/monitoring).
+
+Python example:
+
+```python
+rt = myrmidon.Runtime()
+
+# spawn an observed actor and register it under a hierarchical path
+pid = rt.spawn_with_path_observed(10, "/svc/test/one")
+
+# create a supervisor for the '/svc/test' prefix and register the pid
+rt.create_path_supervisor("/svc/test")
+rt.path_supervisor_watch("/svc/test", pid)
+
+# inspect supervised children
+children = rt.path_supervisor_children("/svc/test")
+print(children)  # [pid]
+
+# remove supervisor when done
+rt.remove_path_supervisor("/svc/test")
+
+```
+
+This mechanism makes it easy to apply restart strategies or monitoring rules to logical groups of actors without affecting the global supervisor.
+
 ### 4. Structured System Messages
 
 #### Python
@@ -419,7 +455,47 @@ export MYRMIDON_MAX_RELEASE_GIL_THREADS=128
 export MYRMIDON_GIL_POOL_SIZE=16
 python your_app.py
 ```
----
+
+### Path-based Registry & Supervision
+
+Myrmidon supports hierarchical path registrations (for example `/system/service/one`) so you can group, query and supervise actors by logical paths.
+
+Python APIs (examples): `rt.register_path(path, pid)`, `rt.unregister_path(path)`, `rt.whereis_path(path)`, `rt.list_children(prefix)`, `rt.list_children_direct(prefix)`, `rt.watch_path(prefix)`, `rt.spawn_with_path_observed(budget, path)`, `rt.child_pids()`, `rt.children_count()`.
+
+Python example:
+
+```python
+from myrmidon import Runtime
+rt = Runtime()
+
+# Spawn and register
+pid = rt.spawn(lambda m: None, 10)
+rt.register_path("/system/service/one", pid)
+
+print(rt.whereis_path("/system/service/one"))
+print(rt.list_children("/system/service"))
+print(rt.list_children_direct("/system"))
+
+# Shallow watch: registers current direct children with the supervisor
+rt.watch_path("/system/service")
+print(rt.child_pids(), rt.children_count())
+```
+
+Node.js example (conceptual):
+
+```javascript
+const { NodeRuntime } = require('./index.js');
+const rt = new NodeRuntime();
+
+const pid = rt.spawn(myHandler, 10);
+rt.registerPath('/system/service/one', pid);
+const children = rt.listChildren('/system/service');
+```
+
+Notes:
+- `list_children` returns all descendant registrations under a prefix.
+- `list_children_direct` returns only immediate children one level below the prefix.
+- `watch_path` performs a shallow registration of direct children with the supervisor — path-scoped supervisors are planned as a next step.
 
 ## Platform Notes
 

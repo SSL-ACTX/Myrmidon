@@ -44,6 +44,8 @@ pub struct Runtime {
     observers: Arc<DashMap<Pid, Arc<Mutex<Vec<mailbox::Message>>>>>,
     network: Arc<Mutex<Option<network::NetworkManager>>>,
     registry: Arc<registry::NameRegistry>,
+    /// Optional per-path supervisors (shallow supervisors keyed by path).
+    path_supervisors: Arc<DashMap<String, Arc<supervisor::Supervisor>>>,
     // Runtime-configurable limits for Python GIL-release behavior
     release_gil_max_threads: Arc<Mutex<usize>>,
     gil_pool_size: Arc<Mutex<usize>>,
@@ -68,6 +70,7 @@ impl Runtime {
             observers: Arc::new(DashMap::new()),
             network: Arc::new(Mutex::new(None)),
             registry: Arc::new(registry::NameRegistry::new()),
+            path_supervisors: Arc::new(DashMap::new()),
             release_gil_max_threads: Arc::new(Mutex::new(256)),
             gil_pool_size: Arc::new(Mutex::new(8)),
             release_gil_strict: Arc::new(Mutex::new(false)),
@@ -182,6 +185,78 @@ impl Runtime {
     /// Resolve a human-readable name to a PID.
     pub fn resolve(&self, name: &str) -> Option<Pid> {
         self.registry.resolve(name)
+    }
+
+    /// Register a hierarchical path for an actor PID.
+    pub fn register_path(&self, path: String, pid: Pid) {
+        self.registry.register(path, pid);
+    }
+
+    /// Unregister a hierarchical path.
+    pub fn unregister_path(&self, path: &str) {
+        self.registry.unregister(path);
+    }
+
+    /// Resolve a path to a PID (exact match).
+    pub fn whereis_path(&self, path: &str) -> Option<Pid> {
+        self.registry.resolve(path)
+    }
+
+    /// Create a path-scoped supervisor for `path`.
+    pub fn create_path_supervisor(&self, path: &str) {
+        self.path_supervisors
+            .entry(path.to_string())
+            .or_insert_with(|| Arc::new(supervisor::Supervisor::new()));
+    }
+
+    /// Remove a path-scoped supervisor if present.
+    pub fn remove_path_supervisor(&self, path: &str) {
+        self.path_supervisors.remove(path);
+    }
+
+    /// Watch a specific pid under a path-scoped supervisor if it exists,
+    /// otherwise fall back to the global supervisor.
+    pub fn path_supervisor_watch(&self, path: &str, pid: Pid) {
+        if let Some(entry) = self.path_supervisors.get(path) {
+            entry.watch(pid);
+        } else {
+            self.supervisor().watch(pid);
+        }
+    }
+
+    /// Return child PIDs supervised by the path-scoped supervisor, if any.
+    pub fn path_supervisor_children(&self, path: &str) -> Vec<Pid> {
+        if let Some(entry) = self.path_supervisors.get(path) {
+            entry.child_pids()
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// List registered entries under a path prefix.
+    pub fn list_children(&self, prefix: &str) -> Vec<(String, Pid)> {
+        self.registry.list_children(prefix)
+    }
+
+    /// List only direct children one level below `prefix`.
+    pub fn list_children_direct(&self, prefix: &str) -> Vec<(String, Pid)> {
+        self.registry.list_direct_children(prefix)
+    }
+
+    /// Watch all direct children under `prefix` (shallow watch).
+    /// This is a convenience to register existing PIDs with the supervisor.
+    pub fn watch_path(&self, prefix: &str) {
+        let children = self.list_children_direct(prefix);
+        for (_path, pid) in children {
+            self.supervisor.watch(pid);
+        }
+    }
+
+    /// Spawn an observed handler and register it under `path`.
+    pub fn spawn_with_path_observed(&self, budget: usize, path: String) -> Pid {
+        let pid = self.spawn_observed_handler(budget);
+        self.register_path(path, pid);
+        pid
     }
 
     /// Send a message to an actor by its registered name.
