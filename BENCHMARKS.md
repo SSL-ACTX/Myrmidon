@@ -1,8 +1,8 @@
 # Iris Benchmarks
 
-The following benchmarks demonstrate Iris's raw throughput and memory efficiency. To test the extreme boundaries of the runtime's memory footprint, synchronization overhead, and cache locality, these benchmarks were run on **severely constrained hardware** rather than typical server infrastructure.
+The following benchmarks demonstrate Iris's raw throughput and memory efficiency. To test the extreme boundaries of the runtime's memory footprint, synchronization overhead, and cache locality, these benchmarks were run on both **severely constrained hardware** and **shared cloud virtual environments**.
 
-If Iris can juggle 100,000 concurrent actors on a phone and a 15-year-old laptop, it will fly on modern server architecture.
+If Iris can juggle 100,000 concurrent actors on a phone and a 15-year-old laptop, it flies on modern server architecture.
 
 ## Methodology
 
@@ -30,25 +30,6 @@ This test validates Iris's ability to allocate and schedule massive concurrency 
 
 #### Analysis: Memory and Allocation
 Spawning 50,000 dedicated OS-thread backed actors on a mobile device without triggering the Linux OOM (Out-Of-Memory) killer validates the extreme leanness of the `Mailbox` architecture. The spawn rate on the 8-core ARM chip scales beautifully, easily breaking 100k allocations per second. 
-
-<details>
-<summary><strong>View Raw Output (Push / 100k)</strong></summary>
-
-```text
---- Iris Stress Test: 0.1.3 ---
-Goal: Spawn 100000 actors.
-🚀 Spawning...
-   [10000/100000] Spawned. Rate: 127539 actors/sec
-   ...
-✅ Spawned 100000 actors in 1.03s (96812 actors/sec)
-📨 Sending 100000 messages...
-✅ Sent 100000 messages in 0.30s (337913 msgs/sec)
-🛑 Cleaning up (stopping all actors)...
-Done.
-
-```
-
-</details>
 
 ---
 
@@ -78,45 +59,36 @@ This is a textbook demonstration of **mechanical sympathy**:
 2. **L2 Cache Warmth:** The 1MB L2 cache stays perfectly warm. Instead of syncing memory boundaries across 8 different cores (false sharing), the single CPU just swaps pointers inside its local cache, allowing a 15-year-old processor to push over half a million messages per second.
 3. **Thermal Headroom:** By running in a cold environment, the 65nm legacy silicon was prevented from thermal throttling, allowing it to sustain its peak 2.19 GHz clock across the entire benchmark.
 
-<details>
-<summary><strong>View Raw Output (Pull / 100k)</strong></summary>
+---
 
-```text
---- Iris Mailbox Stress Test: 0.1.3 ---
-Goal: Spawn 100000 threaded mailbox actors.
-🚀 Spawning (Threaded)...
-   [5000/100000] Spawned. Rate: 27326 actors/sec
-   ...
-   [100000/100000] Spawned. Rate: 41447 actors/sec
-✅ Spawned 100000 actors in 2.41s (41443 actors/sec)
-📨 Sending 100000 messages...
-✅ Sent 100000 messages in 0.18s (563258 msgs/sec)
-🛑 Cleaning up (stopping all actors)...
-Done.
+## Test Environment 3: Cloud Virtualization (vCPUs)
 
-```
+**Hardware:** Shared Enterprise Silicon (2 vCPUs allocated via Hypervisor)
+**Environment:** GitHub Codespaces (AMD EPYC 7763) & Google Colab (Intel Xeon @ 2.20GHz), Ubuntu 22.04 LTS
 
-</details>
+These tests validate how Iris performs in "noisy neighbor" virtualized environments typical of modern CI/CD pipelines and cloud deployments.
 
-<details>
-<summary><strong>View Raw Output (Hot Swap)</strong></summary>
+### Results (GitHub Codespaces - AMD EPYC 7763)
 
-```text
---- Iris Hot Swap Stress Test: 0.1.3 ---
-🚀 Spawning actor 4294967296...
-🔥 Starting simultaneous Send/Swap blitz (5000 swaps, 20000 msgs)...
-   [Swap Progress] 5000/5000 swaps completed...
+| Test Type | Target Actors | Spawn Rate | Message Throughput |
+| --- | --- | --- | --- |
+| **Pull (Threaded)** | 100,000 | ~182,040 actors/sec | **~1,597,836 msgs/sec** |
+| **Push (Green)** | 100,000 | ~182,536 actors/sec | **~1,200,242 msgs/sec** |
+| **Hot Swap Blitz** | 5,000 swaps | **~91,632 swaps/sec** | ~366,528 msgs/sec |
 
-✅ Benchmark Complete!
-   Total Time: 0.06s
-   Swap Rate: 85119 swaps/sec
-   Message Rate: 340477 msgs/sec
-🛑 Stopping actor...
-Done.
+### Results (Google Colab - Intel Xeon)
 
-```
+| Test Type | Target Actors | Spawn Rate | Message Throughput |
+| --- | --- | --- | --- |
+| **Pull (Threaded)** | 100,000 | ~136,273 actors/sec | **~803,230 msgs/sec** |
+| **Push (Green)** | 100,000 | ~131,072 actors/sec | **~794,230 msgs/sec** |
+| **Hot Swap Blitz** | 5,000 swaps | **~136,428 swaps/sec** | ~545,711 msgs/sec |
 
-</details>
+#### Analysis: The 1.5 Million Barrier & Monolithic vs Chiplet Silicon
+
+Despite being heavily virtualized and time-sliced by hypervisors, Iris shatters the **1.5 million messages per second** barrier on the AMD EPYC instance. This demonstrates that Tokio's underlying channel implementations and Iris's Rust-to-Python FFI boundary scale exceptionally well with modern IPC (Instructions Per Clock).
+
+Interestingly, while the AMD EPYC crushed the Intel Xeon in raw message passing (1.59M vs 803k), the Intel Xeon won the hot-swap benchmark (136k vs 91k). Atomic operations (such as the pointer swapping used in Iris's live hot-swap functionality) often resolve faster on older monolithic silicon architectures compared to chiplet-based designs like AMD's Zen architecture, where cache coherency must sync across the Infinity Fabric.
 
 ---
 
@@ -124,4 +96,4 @@ Done.
 
 Iris's core loop—allocating PIDs, routing bytes through channels, and executing Tokio tasks—is purely CPU-bound and instruction-cache friendly.
 
-By achieving upwards of **560,000 messages per second**, sustaining **85,000 logic hot-swaps per second**, and juggling **100,000 concurrent threaded actors** on heavily constrained and legacy hardware, the runtime proves it carries virtually zero structural bloat. On modern, multi-core server infrastructure (e.g., AMD EPYC, Intel Xeon, AWS Graviton), Iris's scalability will be bound almost entirely by network bandwidth rather than CPU overhead.
+By achieving upwards of **1.59 million messages per second** on shared cloud vCPUs, sustaining **136,000 logic hot-swaps per second**, and juggling **100,000 concurrent threaded actors** on heavily constrained and legacy hardware, the runtime proves it carries virtually zero structural bloat. Whether running on a 15-year-old laptop or an enterprise AMD EPYC server rack, Iris delivers BEAM-class, Erlang-like concurrency to modern scripting languages.

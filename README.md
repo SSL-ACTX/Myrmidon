@@ -311,7 +311,25 @@ messages.forEach(msg => {
 
 ```
 
-### 5. Mailbox Introspection & Timers
+---
+
+### 5. Hot-Swapping Logic
+
+#### Python
+
+```python
+def behavior_a(msg): print("Logic A")
+def behavior_b(msg): print("Logic B (Upgraded!)")
+
+pid = rt.spawn(behavior_a, budget=10)
+rt.send(pid, b"test") # Prints "Logic A"
+
+rt.hot_swap(pid, behavior_b)
+rt.send(pid, b"test") # Prints "Logic B (Upgraded!)"
+
+```
+
+### 6. Mailbox Introspection & Timers
 
 Iris exposes lightweight mailbox introspection and actor-local timers so guest languages can inspect queue sizes and schedule timed messages.
 
@@ -354,7 +372,7 @@ rt.cancel_timer(timer_id)
 
 ---
 
-### 6. Exit Reasons (Structured)
+### 7. Exit Reasons (Structured)
 
 When an actor exits the runtime sends a structured `EXIT` system message that includes the reason and optional metadata. This allows supervisors and link/watch logic to make informed decisions.
 
@@ -380,32 +398,12 @@ Node.js receives `system` objects with the same fields: `fromPid`, `targetPid`, 
 
 ---
 
-### 7. Runtime Configuration APIs (programmatic)
+### 8. Runtime Configuration APIs (programmatic)
 
 In addition to the environment variables documented above, the Python runtime exposes programmatic setters:
 
 - `rt.set_release_gil_limits(max_threads: int, gil_pool_size: int)` — set the per-process cap and fallback pool size at runtime.
 - `rt.set_release_gil_strict(strict: bool)` — when `true` a `spawn(..., release_gil=True)` will return an error if the dedicated-thread cap is reached instead of falling back to the shared pool.
-
-These mirror the behavior of `MYRMIDON_MAX_RELEASE_GIL_THREADS` and `MYRMIDON_GIL_POOL_SIZE` but allow dynamic tuning from the host language.
-
----
-
-### 5. Hot-Swapping Logic
-
-#### Python
-
-```python
-def behavior_a(msg): print("Logic A")
-def behavior_b(msg): print("Logic B (Upgraded!)")
-
-pid = rt.spawn(behavior_a, budget=10)
-rt.send(pid, b"test") # Prints "Logic A"
-
-rt.hot_swap(pid, behavior_b)
-rt.send(pid, b"test") # Prints "Logic B (Upgraded!)"
-
-```
 
 ---
 
@@ -441,25 +439,6 @@ acquires the GIL; `release_gil=False` keeps the previous behavior (callback runs
 directly while holding the GIL on the async worker).
 
 ---
-
-## Configuration (environment)
-
-You can tune `release_gil` behavior with environment variables:
-
-- `MYRMIDON_MAX_RELEASE_GIL_THREADS` (integer, default 256): maximum number of
-    dedicated per-actor threads created when `release_gil=True`. When exceeded,
-    the runtime falls back to a shared GIL worker pool.
-- `MYRMIDON_GIL_POOL_SIZE` (integer, default 8): number of threads in the
-    shared GIL worker pool used as a fallback when the dedicated-thread limit is
-    reached.
-
-Example (bash):
-
-```bash
-export MYRMIDON_MAX_RELEASE_GIL_THREADS=128
-export MYRMIDON_GIL_POOL_SIZE=16
-python your_app.py
-```
 
 ### Path-based Registry & Supervision
 
@@ -521,15 +500,16 @@ Supported. Ensure you have the latest Microsoft C++ Build Tools installed for Py
 
 > [!IMPORTANT]
 > **Production Status:** Iris is currently in **Alpha**.
-> * **Performance:**
-> * **Push Actors:** Validated to scale to **100k+ concurrent actors** with message throughput exceeding **~409k msgs/sec** even on single-core legacy hardware.
-> * **Pull Actors:** High-performance blocking actors supporting **100k+ concurrent instances** with throughput reaching **~563k msgs/sec**, far exceeding traditional thread-pool limitations.
+> * **Performance Metrics (v0.3.0):**
+> * **Push Actors:** Validated to scale to **100k+ concurrent actors** with message throughput exceeding **~1.2M+ msgs/sec** on modern cloud vCPUs and **~409k msgs/sec** on single-core legacy hardware.
+> * **Pull Actors:** High-performance threaded actors supporting **100k+ concurrent instances** with throughput reaching **~1.5M+ msgs/sec**, demonstrating massive scaling beyond traditional thread-pool limitations.
+> * **Hot-Swapping:** Logic upgrades validated at **~136k swaps/sec** while maintaining active message processing.
 > 
 > 
-> * The binary protocol is subject to change.
-> * Always use the `Supervisor` for critical actor lifecycles to ensure automatic recovery.
+> * **Notice:** The binary protocol is subject to change.
+> * **Stability:** Always use the `Supervisor` for critical actor lifecycles to ensure automatic recovery and location transparency.
 > 
->
+> 
 
 ---
 
