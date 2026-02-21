@@ -30,16 +30,16 @@ class Runtime:
     def spawn_with_mailbox(self, handler, budget: int = 100) -> int:
         """
         Spawn a new pull-based actor in a dedicated OS thread.
-        
+
         The handler must be a callable that accepts a single argument: the `mailbox` object.
         The handler is responsible for running its own loop and calling `mailbox.recv()` (blocking).
-        
+
         Note: This consumes a generic thread pool worker. Bounded by system resources.
-        
+
         Args:
             handler: A callable taking (mailbox: PyMailbox).
             budget: Reduction budget for cooperative scheduling.
-            
+
         Returns:
             int: The PID of the spawned actor.
         """
@@ -55,6 +55,27 @@ class Runtime:
         if pid:
             return self._inner.send(pid, data)
         return False
+
+    def send_after(self, pid: int, delay_ms: int, data: bytes) -> int:
+        """
+        Schedule a one-shot message to be sent after `delay_ms` milliseconds.
+        Returns a timer ID.
+        """
+        return self._inner.send_after(pid, delay_ms, data)
+
+    def send_interval(self, pid: int, interval_ms: int, data: bytes) -> int:
+        """
+        Schedule a repeating message to be sent every `interval_ms` milliseconds.
+        Returns a timer ID.
+        """
+        return self._inner.send_interval(pid, interval_ms, data)
+
+    def cancel_timer(self, timer_id: int) -> bool:
+        """
+        Cancel a previously scheduled timer/interval.
+        Returns True if a timer was successfully cancelled.
+        """
+        return self._inner.cancel_timer(timer_id)
 
     def register(self, name: str, pid: int):
         """Assign a human-readable name to a PID."""
@@ -164,10 +185,10 @@ class Runtime:
     def selective_recv(self, pid: int, matcher: Callable, timeout: Optional[float] = None) -> Awaitable[Optional[Union[bytes, PySystemMessage]]]:
         """
         Return an awaitable that resolves when `matcher(msg)` is True.
-        
-        NOTE: This is for 'observed' actors (debug/monitoring) spawned via 
+
+        NOTE: This is for 'observed' actors (debug/monitoring) spawned via
         `spawn_observed_handler`, NOT for standard mailbox actors.
-        
+
         Standard mailbox actors should use `mailbox.selective_recv()` directly.
 
         Args:
@@ -233,6 +254,10 @@ class Runtime:
     def join(self, pid: int):
         """Block until the specified actor exits."""
         self._inner.join(pid)
+
+    def is_alive(self, pid: int) -> bool:
+        """Check if an actor is currently alive."""
+        return self._inner.is_alive(pid)
 
     def mailbox_size(self, pid: int) -> Optional[int]:
         """Return the number of queued user messages for the actor with `pid`."""
