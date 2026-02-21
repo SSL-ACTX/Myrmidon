@@ -1,10 +1,10 @@
 # tests/test3.py
-import myrmidon
+import iris
 import time
 
 print("--- Phase 4: Hot Code Swapping Test ---")
 
-rt = myrmidon.Runtime()
+rt = iris.Runtime()
 
 def behavior_a(msg):
     print(f"[A] Received: {msg.decode()}")

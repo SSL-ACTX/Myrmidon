@@ -5,14 +5,13 @@ use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 use std::time::Duration;
 
-// Fix: Enable multi-thread runtime so block_in_place works in src/py.rs
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_phase7_features() {
     let addr = "127.0.0.1:9096";
 
     // 1. Setup Node A (The Provider)
     let (rt_a, pid_a) = Python::with_gil(|py| {
-        let module = myrmidon::py::make_module(py).unwrap();
+        let module = iris::py::make_module(py).unwrap();
         let rt = module
             .as_ref(py)
             .getattr("PyRuntime")
@@ -41,7 +40,7 @@ async fn test_phase7_features() {
 
     // 2. Test Membrane Hardening: is_node_up (Synchronous call from inside tokio)
     Python::with_gil(|py| {
-        let module = myrmidon::py::make_module(py).unwrap();
+        let module = iris::py::make_module(py).unwrap();
         let rt_b = module
             .as_ref(py)
             .getattr("PyRuntime")
@@ -66,7 +65,7 @@ async fn test_phase7_features() {
 
     // 3. Test Async Service Discovery: resolve_remote_py (Awaitable)
     Python::with_gil(|py| {
-        let module = myrmidon::py::make_module(py).unwrap();
+        let module = iris::py::make_module(py).unwrap();
         let rt_b = module
             .as_ref(py)
             .getattr("PyRuntime")
@@ -107,7 +106,7 @@ result = loop.run_until_complete(run_discovery(rt, addr))
 
     // 4. Test Structured System Messages: EXIT mapping
     Python::with_gil(|py| {
-        let module = myrmidon::py::make_module(py).unwrap();
+        let module = iris::py::make_module(py).unwrap();
         let rt = module
             .as_ref(py)
             .getattr("PyRuntime")
@@ -141,7 +140,7 @@ result = loop.run_until_complete(run_discovery(rt, addr))
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     Python::with_gil(|py| {
-        let module = myrmidon::py::make_module(py).unwrap();
+        let module = iris::py::make_module(py).unwrap();
         let rt = module
             .as_ref(py)
             .getattr("PyRuntime")

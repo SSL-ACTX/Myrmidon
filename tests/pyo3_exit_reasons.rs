@@ -5,7 +5,7 @@ use pyo3::prelude::*;
 #[tokio::test]
 async fn test_exit_reason_on_panic() {
     Python::with_gil(|py| {
-        let module = myrmidon::py::make_module(py).unwrap();
+        let module = iris::py::make_module(py).unwrap();
         let rt = module.as_ref(py).getattr("PyRuntime").unwrap().call0().unwrap();
 
         // Spawn an observed actor that will be stopped normally.

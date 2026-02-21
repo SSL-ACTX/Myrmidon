@@ -1,6 +1,6 @@
 <div align="center">
 
-![Myrmidon Banner](https://capsule-render.vercel.app/api?type=waving&color=0:000000,100:2E3440&height=220&section=header&text=Myrmidon&fontSize=90&fontColor=FFFFFF&animation=fadeIn&fontAlignY=35&rotate=-2&stroke=4C566A&strokeWidth=2&desc=Distributed%20Polyglot%20Actor%20Runtime&descSize=20&descAlignY=60)
+![Iris Banner](https://capsule-render.vercel.app/api?type=waving&color=0:000000,100:2E3440&height=220&section=header&text=Iris&fontSize=90&fontColor=FFFFFF&animation=fadeIn&fontAlignY=35&rotate=-2&stroke=4C566A&strokeWidth=2&desc=Distributed%20Polyglot%20Actor%20Runtime&descSize=20&descAlignY=60)
 
 ![Version](https://img.shields.io/badge/version-0.1.3-blue.svg?style=for-the-badge)
 ![Language](https://img.shields.io/badge/language-Rust%20%7C%20Python%20%7C%20Node.js-orange.svg?style=for-the-badge&logo=rust)
@@ -17,20 +17,20 @@
 
 ## Overview
 
-**Myrmidon** is a distributed actor-model runtime built in Rust with deep **Python** and **Node.js** integration. It is designed for systems that require the extreme concurrency of Erlang, the raw speed of Rust, and the flexibility of high-level scripting languages.
+**Iris** is a distributed actor-model runtime built in Rust with deep **Python** and **Node.js** integration. It is designed for systems that require the extreme concurrency of Erlang, the raw speed of Rust, and the flexibility of high-level scripting languages.
 
-Unlike standard message queues, Myrmidon implements a **cooperative reduction-based scheduler**. This allows the runtime to manage millions of actors with microsecond latency, providing built-in fault tolerance, hot code swapping, and location-transparent messaging across a global cluster.
+Unlike standard message queues, Iris implements a **cooperative reduction-based scheduler**. This allows the runtime to manage millions of actors with microsecond latency, providing built-in fault tolerance, hot code swapping, and location-transparent messaging across a global cluster.
 
 ## Core Capabilities
 
 ### ⚡ Hybrid Actor Model (Push & Pull)
-Myrmidon supports two distinct actor patterns:
+Iris supports two distinct actor patterns:
 * **Push Actors (Green Threads):** Extremely lightweight. Rust "pushes" messages to a callback only when data arrives.
 * **Pull Actors (OS Threads):** Specialized blocking actors that "pull" messages from a `Mailbox`.
     * **Python:** Runs in a dedicated OS thread, blocking on `recv()` (releasing the GIL).
 
 ### ⚡ Cooperative Reduction Scheduler
-Inspired by the BEAM (Erlang VM), Myrmidon uses a **Cooperative Reduction Scheduler** to ensure system fairness.
+Inspired by the BEAM (Erlang VM), Iris uses a **Cooperative Reduction Scheduler** to ensure system fairness.
 * **Fairness:** Every actor is assigned a "reduction budget". The message processing loop tracks this budget and explicitly yields control back to the Tokio runtime via `yield_now()` once the limit is reached.
 * **No Starvation:** This prevents high-throughput actors from "monopolizing" a CPU core, ensuring all actors in the mesh get a chance to process their mailboxes.
 
@@ -56,13 +56,13 @@ Built-in fault tolerance modeled after the "Let it Crash" philosophy.
 ## Technical Deep Dive
 
 ### The Actor Lifecycle
-Myrmidon actors are extremely lightweight, but the implementation differs by type:
+Iris actors are extremely lightweight, but the implementation differs by type:
 
 1. **Push Actors:** Purely state-machine driven. They consume ~2KB of RAM and exist only as futures in the Tokio runtime.
 2. **Pull Actors (Python):** Allocated a dedicated stack and OS thread (via Tokio's blocking pool). They are heavier but allow for straightforward, blocking, synchronous logic without "colored functions" (async/await).
 
 ### Distributed Mesh Protocol
-Myrmidon uses a proprietary length-prefixed binary protocol over TCP for inter-node communication.
+Iris uses a proprietary length-prefixed binary protocol over TCP for inter-node communication.
 
 | Packet Type | Function | Payload Structure |
 | :--- | :--- | :--- |
@@ -72,7 +72,7 @@ Myrmidon uses a proprietary length-prefixed binary protocol over TCP for inter-n
 | `0x03` | **Heartbeat (Pong)** | `[Empty]` — Acknowledge health |
 
 ### Memory Safety & FFI
-Myrmidon bridges the gap between Rust’s memory safety and dynamic languages using **PyO3** (Python) and **N-API** (Node.js):
+Iris bridges the gap between Rust’s memory safety and dynamic languages using **PyO3** (Python) and **N-API** (Node.js):
 * **Membrane Hardening:** The runtime uses `block_in_place` and `ThreadSafeFunction` queues to safely handle synchronous calls from within asynchronous Rust contexts.
 * **GIL Management:** * Python `recv()` calls release the GIL, allowing other threads to run in parallel while the actor waits for messages.
 * **Atomic RwLocks:** Actor behaviors are protected by thread-safe pointer swaps, ensuring hot-swapping is thread-safe.
@@ -91,8 +91,8 @@ Myrmidon bridges the gap between Rust’s memory safety and dynamic languages us
 #### 🐍 Python
 ```bash
 # Clone the repository
-git clone https://github.com/SSL-ACTX/myrmidon.git
-cd myrmidon
+git clone https://github.com/SSL-ACTX/iris.git
+cd iris
 
 # Build and install the Python extension
 maturin develop --release
@@ -103,8 +103,8 @@ maturin develop --release
 
 ```bash
 # Clone the repository
-git clone https://github.com/SSL-ACTX/myrmidon.git
-cd myrmidon
+git clone https://github.com/SSL-ACTX/iris.git
+cd iris
 
 # Build the N-API binding
 npm install
@@ -116,7 +116,7 @@ npm run build
 
 ## Usage Examples
 
-Myrmidon provides a unified API across both supported languages.
+Iris provides a unified API across both supported languages.
 
 ### 1. High-Performance Push Actors (Recommended)
 
@@ -125,8 +125,8 @@ Use `spawn` for maximum throughput (100k+ actors). Rust owns the scheduling and 
 #### Python
 
 ```python
-import myrmidon
-rt = myrmidon.Runtime()
+import iris
+rt = iris.Runtime()
 
 def fast_worker(msg):
     print(f"Processed: {msg}")
@@ -249,7 +249,7 @@ async function findAndQuery() {
 
 ### Path-Scoped Supervisors
 
-Myrmidon supports hierarchical path registrations (e.g. `/svc/payment/processor`) and allows you to create a supervisor that is scoped to a path prefix. This is useful for grouping related actors and applying supervision policies per-service or per-tenant.
+Iris supports hierarchical path registrations (e.g. `/svc/payment/processor`) and allows you to create a supervisor that is scoped to a path prefix. This is useful for grouping related actors and applying supervision policies per-service or per-tenant.
 
 Key Python APIs:
 - `rt.create_path_supervisor(path)` — create a per-path supervisor instance.
@@ -261,7 +261,7 @@ Key Python APIs:
 Python example:
 
 ```python
-rt = myrmidon.Runtime()
+rt = iris.Runtime()
 
 # spawn an observed actor and register it under a hierarchical path
 pid = rt.spawn_with_path_observed(10, "/svc/test/one")
@@ -288,7 +288,7 @@ This mechanism makes it easy to apply restart strategies or monitoring rules to 
 ```python
 messages = rt.get_messages(observer_pid)
 for msg in messages:
-    if isinstance(msg, myrmidon.PySystemMessage):
+    if isinstance(msg, iris.PySystemMessage):
         if msg.type_name == "EXIT":
             print(f"Actor {msg.target_pid} has crashed!")
 
@@ -313,7 +313,7 @@ messages.forEach(msg => {
 
 ### 5. Mailbox Introspection & Timers
 
-Myrmidon exposes lightweight mailbox introspection and actor-local timers so guest languages can inspect queue sizes and schedule timed messages.
+Iris exposes lightweight mailbox introspection and actor-local timers so guest languages can inspect queue sizes and schedule timed messages.
 
 #### Mailbox Introspection
 
@@ -368,7 +368,7 @@ Python example receiving exit info:
 
 ```python
 for msg in rt.get_messages(supervisor_pid):
-    if isinstance(msg, myrmidon.PySystemMessage) and msg.type_name == 'EXIT':
+    if isinstance(msg, iris.PySystemMessage) and msg.type_name == 'EXIT':
         print('from:', msg.from_pid)
         print('target:', msg.target_pid)
         print('reason:', msg.reason)        # e.g. 'Normal' | 'Panic' | 'Killed'
@@ -416,7 +416,7 @@ that acquires the GIL (avoiding holding the GIL on the async worker) using the
 `release_gil` flag on `Runtime.spawn`:
 
 ```python
-from myrmidon import Runtime
+from iris import Runtime
 import time
 
 rt = Runtime()
@@ -463,14 +463,14 @@ python your_app.py
 
 ### Path-based Registry & Supervision
 
-Myrmidon supports hierarchical path registrations (for example `/system/service/one`) so you can group, query and supervise actors by logical paths.
+Iris supports hierarchical path registrations (for example `/system/service/one`) so you can group, query and supervise actors by logical paths.
 
 Python APIs (examples): `rt.register_path(path, pid)`, `rt.unregister_path(path)`, `rt.whereis_path(path)`, `rt.list_children(prefix)`, `rt.list_children_direct(prefix)`, `rt.watch_path(prefix)`, `rt.spawn_with_path_observed(budget, path)`, `rt.child_pids()`, `rt.children_count()`.
 
 Python example:
 
 ```python
-from myrmidon import Runtime
+from iris import Runtime
 rt = Runtime()
 
 # Spawn and register
@@ -520,10 +520,10 @@ Supported. Ensure you have the latest Microsoft C++ Build Tools installed for Py
 ## Disclaimer
 
 > [!IMPORTANT]
-> **Production Status:** Myrmidon is currently in **Alpha**.
+> **Production Status:** Iris is currently in **Alpha**.
 > * **Performance:**
-> * **Push Actors:** Validated to scale to **100k+ concurrent actors** with message throughput exceeding **385k msgs/sec** even on single-core legacy hardware.
-> * **Pull Actors:** High-performance blocking actors supporting **100k+ concurrent instances** with throughput reaching **~473k msgs/sec**, far exceeding traditional thread-pool limitations.
+> * **Push Actors:** Validated to scale to **100k+ concurrent actors** with message throughput exceeding **~409k msgs/sec** even on single-core legacy hardware.
+> * **Pull Actors:** High-performance blocking actors supporting **100k+ concurrent instances** with throughput reaching **~563k msgs/sec**, far exceeding traditional thread-pool limitations.
 > 
 > 
 > * The binary protocol is subject to change.

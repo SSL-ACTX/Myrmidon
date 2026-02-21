@@ -1,8 +1,8 @@
 import time
-import myrmidon
+import iris
 
 def test_path_supervisor_restart_all():
-    rt = myrmidon.Runtime()
+    rt = iris.Runtime()
 
     # spawn two observed actors under distinct child paths but same prefix
     pid1 = rt.spawn_with_path_observed(10, "/svc/restart/all/one")

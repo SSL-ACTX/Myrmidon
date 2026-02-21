@@ -1,10 +1,10 @@
 # chaos_test.py
-import myrmidon
+import iris
 import time
 import threading
 import gc
 
-rt = myrmidon.Runtime()
+rt = iris.Runtime()
 
 def initial_behavior(msg):
     pass

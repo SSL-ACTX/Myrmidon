@@ -2,11 +2,11 @@ import time
 import threading
 import pytest
 
-import myrmidon
+import iris
 
 
 def test_release_gil_toggle():
-    rt = myrmidon.Runtime()
+    rt = iris.Runtime()
 
     seen = []
 

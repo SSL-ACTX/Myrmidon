@@ -47,7 +47,7 @@ function renderProgress(label, current, total, start) {
 
 /* ================= HEADER ================= */
 
-console.log(`\n--- Node.js Myrmidon Stress Test ---`);
+console.log(`\n--- Node.js Iris Stress Test ---`);
 console.log(`Actors: ${COUNT.toLocaleString()}\n`);
 
 /* ================= SPAWN ================= */

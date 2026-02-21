@@ -1,5 +1,5 @@
 // src/lib.rs
-//! Myrmidon — core runtime (Phase 1-7)
+//! Iris — core runtime (Phase 1-7)
 //!
 //! This crate contains the core logic for PID allocation, mailboxes,
 //! cooperative scheduling, distributed networking, name registration,
@@ -27,12 +27,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::runtime::Runtime as TokioRuntime;
 use tokio::time::Duration;
 
-/// A global, multi-threaded Tokio runtime shared by all Myrmidon instances.
+/// A global, multi-threaded Tokio runtime shared by all Iris instances.
 static RUNTIME: Lazy<TokioRuntime> = Lazy::new(|| {
     tokio::runtime::Builder::new_multi_thread()
     .enable_all()
     .build()
-    .expect("Failed to create Myrmidon Tokio Runtime")
+    .expect("Failed to create Iris Tokio Runtime")
 });
 
 /// Lightweight runtime for spawning actors and managing distributed nodes.
@@ -341,7 +341,7 @@ impl Runtime {
             let manager = network::NetworkManager::new(rt_handle);
             match manager.start_server(&addr).await {
                 Ok(actual) => tracing::info!(%actual, "node is now listening for remote messages"),
-                Err(e) => eprintln!("[Myrmidon] Network Server Error: {}", e),
+                Err(e) => eprintln!("[Iris] Network Server Error: {}", e),
             }
         });
     }
@@ -354,7 +354,7 @@ impl Runtime {
             Ok(0) => None, // Node returned 0, meaning not found
             Ok(pid) => Some(pid),
             Err(e) => {
-                eprintln!("[Myrmidon] Remote Resolve Error: {}", e);
+                eprintln!("[Iris] Remote Resolve Error: {}", e);
                 None
             }
         }
@@ -366,7 +366,7 @@ impl Runtime {
         RUNTIME.spawn(async move {
             let manager = network::NetworkManager::new(rt_handle);
             if let Err(e) = manager.send_remote(&addr, pid, data).await {
-                eprintln!("[Myrmidon] Remote Send Error: {}", e);
+                eprintln!("[Iris] Remote Send Error: {}", e);
             }
         });
     }

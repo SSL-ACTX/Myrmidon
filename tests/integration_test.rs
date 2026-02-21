@@ -1,6 +1,6 @@
 use bytes::Bytes;
-use myrmidon::mailbox::Message;
-use myrmidon::Runtime;
+use iris::mailbox::Message;
+use iris::Runtime;
 
 #[tokio::test]
 async fn actor_recv_and_cleanup() {
@@ -176,7 +176,7 @@ async fn supervisor_restart_one_for_one() {
     rt.supervise(
         pid,
         factory,
-        myrmidon::supervisor::RestartStrategy::RestartOne,
+        iris::supervisor::RestartStrategy::RestartOne,
     );
 
     // Link the factory-spawned child to a second observer to verify exit signals
@@ -209,7 +209,7 @@ async fn supervisor_restart_one_for_one() {
     // verify linked pid received exit notification when original child died
     let msgs = rt.get_observed_messages(pid2).unwrap();
     assert!(msgs.iter().any(|m| match m {
-        Message::System(m) => matches!(m, myrmidon::mailbox::SystemMessage::Exit(_)),
+        Message::System(m) => matches!(m, iris::mailbox::SystemMessage::Exit(_)),
         _ => false,
     }));
 }
@@ -275,12 +275,12 @@ async fn supervisor_restart_all() {
         rt.supervise(
             pid_a,
             factory_a,
-            myrmidon::supervisor::RestartStrategy::RestartAll,
+            iris::supervisor::RestartStrategy::RestartAll,
         );
         rt.supervise(
             pid_b,
             factory_b,
-            myrmidon::supervisor::RestartStrategy::RestartAll,
+            iris::supervisor::RestartStrategy::RestartAll,
         );
 
         // crash one child; both should be restarted

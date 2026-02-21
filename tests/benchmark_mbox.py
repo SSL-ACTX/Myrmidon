@@ -1,4 +1,4 @@
-import myrmidon
+import iris
 import time
 import threading
 
@@ -6,8 +6,8 @@ import threading
 TOTAL_GOAL = 10_000   # We will run this many TOTAL
 CONCURRENCY_LIMIT = 500  # But only this many AT ONCE
 
-print(f"--- Myrmidon Bounded Mailbox Test ---")
-rt = myrmidon.PyRuntime()
+print(f"--- Iris Bounded Mailbox Test ---")
+rt = iris.PyRuntime()
 
 # A semaphore to track available 'slots' in our thread pool
 pool_sem = threading.Semaphore(CONCURRENCY_LIMIT)

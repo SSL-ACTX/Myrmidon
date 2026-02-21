@@ -4,11 +4,10 @@
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
-// Needs multi-thread tokio runtime so Python blocking helpers work.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_selective_recv_observed_py() {
     Python::with_gil(|py| {
-        let module = myrmidon::py::make_module(py).unwrap();
+        let module = iris::py::make_module(py).unwrap();
         // Instantiate the runtime directly via the class constructor exposed in the module
         let rt_class = module.getattr(py, "PyRuntime").unwrap();
         let rt = rt_class.call0(py).unwrap();
@@ -94,7 +93,7 @@ result = loop.run_until_complete(run_selective(rt, pid))
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_selective_recv_system_message() {
     Python::with_gil(|py| {
-        let module = myrmidon::py::make_module(py).unwrap();
+        let module = iris::py::make_module(py).unwrap();
         let rt_class = module.getattr(py, "PyRuntime").unwrap();
         let rt = rt_class.call0(py).unwrap();
 
@@ -153,7 +152,7 @@ result = loop.run_until_complete(run_selective(rt, pid))
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_selective_recv_timeout() {
     Python::with_gil(|py| {
-        let module = myrmidon::py::make_module(py).unwrap();
+        let module = iris::py::make_module(py).unwrap();
         let rt_class = module.getattr(py, "PyRuntime").unwrap();
         let rt = rt_class.call0(py).unwrap();
 
@@ -201,7 +200,7 @@ result = loop.run_until_complete(run_with_timeout(rt, pid))
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_selective_recv_success_with_timeout() {
     Python::with_gil(|py| {
-        let module = myrmidon::py::make_module(py).unwrap();
+        let module = iris::py::make_module(py).unwrap();
         let rt_class = module.getattr(py, "PyRuntime").unwrap();
         let rt = rt_class.call0(py).unwrap();
 

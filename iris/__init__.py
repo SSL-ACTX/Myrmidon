@@ -1,11 +1,11 @@
-# myrmidon/__init__.py
+# iris/__init__.py
 import asyncio
 from typing import Optional, Callable, Union, Awaitable
 
 try:
-    from .myrmidon import PyRuntime, PySystemMessage, version, allocate_buffer, PyMailbox
+    from .iris import PyRuntime, PySystemMessage, version, allocate_buffer, PyMailbox
 except ImportError:
-    from myrmidon import PyRuntime, PySystemMessage, version, allocate_buffer, PyMailbox
+    from iris import PyRuntime, PySystemMessage, version, allocate_buffer, PyMailbox
 
 class Runtime:
     def __init__(self):

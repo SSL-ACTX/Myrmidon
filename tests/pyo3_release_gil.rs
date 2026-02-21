@@ -5,12 +5,11 @@ use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyList};
 use std::time::Duration;
 
-// Ensure multi-threaded tokio runtime so blocking tasks run on separate threads.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_spawn_py_handler_release_gil_toggle() {
     // Create runtime and two handlers in the module namespace so they share a SEEN list
     let module = Python::with_gil(|py| {
-        let module = myrmidon::py::make_module(py).unwrap();
+        let module = iris::py::make_module(py).unwrap();
         let g = module.as_ref(py).dict();
         py.run(
             r#"

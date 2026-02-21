@@ -1,4 +1,4 @@
-import myrmidon
+import iris
 import time
 import sys
 
@@ -9,11 +9,11 @@ import sys
 COUNT = 100_000  
 BATCH_SIZE = 5000
 
-print(f"--- Myrmidon Mailbox Stress Test: {myrmidon.version()} ---")
+print(f"--- Iris Mailbox Stress Test: {iris.version()} ---")
 print(f"Goal: Spawn {COUNT} threaded mailbox actors.")
 
 # Instantiate the runtime
-rt = myrmidon.PyRuntime()
+rt = iris.PyRuntime()
 
 # A blocking handler that loops until the channel is closed.
 # This mimics a standard "Erlang-style" actor loop.

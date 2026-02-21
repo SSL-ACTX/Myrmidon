@@ -1,9 +1,9 @@
 import time
-import myrmidon
+import iris
 
 
 def test_path_supervisor_restart_one():
-    rt = myrmidon.Runtime()
+    rt = iris.Runtime()
 
     pid = rt.spawn_with_path_observed(10, "/svc/restart/one")
     rt.create_path_supervisor("/svc/restart")

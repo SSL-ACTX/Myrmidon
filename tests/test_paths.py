@@ -1,5 +1,5 @@
 import time
-from myrmidon import Runtime
+from iris import Runtime
 
 
 def test_path_registry_and_watch():

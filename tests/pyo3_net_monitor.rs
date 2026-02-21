@@ -10,7 +10,7 @@ async fn test_remote_monitoring_failure() {
 
     // 1. Setup Node A (The Target)
     let (rt_a, pid_a) = Python::with_gil(|py| {
-        let module = myrmidon::py::make_module(py).unwrap();
+        let module = iris::py::make_module(py).unwrap();
         let rt = module
             .as_ref(py)
             .getattr("PyRuntime")
@@ -34,7 +34,7 @@ async fn test_remote_monitoring_failure() {
 
     // 2. Setup Node B (The Guardian)
     let rt_b = Python::with_gil(|py| {
-        let module = myrmidon::py::make_module(py).unwrap();
+        let module = iris::py::make_module(py).unwrap();
         let rt = module
             .as_ref(py)
             .getattr("PyRuntime")

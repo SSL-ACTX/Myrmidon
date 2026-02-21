@@ -1,4 +1,4 @@
-import myrmidon
+import iris
 import time
 import sys
 
@@ -6,10 +6,10 @@ import sys
 COUNT = 100_000  # The Goal
 BATCH_SIZE = 10000
 
-print(f"--- Myrmidon Stress Test: {myrmidon.version()} ---")
+print(f"--- Iris Stress Test: {iris.version()} ---")
 print(f"Goal: Spawn {COUNT} actors.")
 
-rt = myrmidon.Runtime()
+rt = iris.Runtime()
 
 # A minimal handler that does nothing (to test pure overhead)
 def no_op_handler(msg):

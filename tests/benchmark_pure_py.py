@@ -2,7 +2,6 @@ import asyncio
 import time
 import sys
 
-# Config to match your Myrmidon test
 COUNT = 100000
 
 async def actor(queue):

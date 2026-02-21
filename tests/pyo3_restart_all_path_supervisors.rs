@@ -7,7 +7,7 @@ use std::time::Duration;
 #[tokio::test]
 async fn test_path_supervisor_restart_all() {
     Python::with_gil(|py| {
-        let module = myrmidon::py::make_module(py).expect("make_module");
+        let module = iris::py::make_module(py).expect("make_module");
         let rt_type = module.as_ref(py).getattr("PyRuntime").unwrap();
         let rt = rt_type.call0().unwrap();
 

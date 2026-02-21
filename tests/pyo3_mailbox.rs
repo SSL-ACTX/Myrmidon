@@ -7,7 +7,7 @@ use pyo3::types::PyDict;
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_mailbox_actor_basic_recv() {
     Python::with_gil(|py| {
-        let module = myrmidon::py::make_module(py).unwrap();
+        let module = iris::py::make_module(py).unwrap();
         // Instantiate the runtime directly via the class constructor exposed in the module
         let rt = module.getattr(py, "PyRuntime").unwrap().call0(py).unwrap();
         let locals = PyDict::new(py);
@@ -21,7 +21,6 @@ async fn test_mailbox_actor_basic_recv() {
 import time
 
 # A pull-based actor that reads from its mailbox.
-# NOTE: No longer 'async def'. This runs in a dedicated thread.
 def mailbox_actor(mailbox):
     # 1. Standard receive (blocking, releases GIL internally)
     msg1 = mailbox.recv()
@@ -61,7 +60,7 @@ time.sleep(0.5)
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_mailbox_actor_selective_recv() {
     Python::with_gil(|py| {
-        let module = myrmidon::py::make_module(py).unwrap();
+        let module = iris::py::make_module(py).unwrap();
         let rt = module.getattr(py, "PyRuntime").unwrap().call0(py).unwrap();
         let locals = PyDict::new(py);
         locals.set_item("rt", rt.clone()).unwrap();
@@ -122,7 +121,7 @@ time.sleep(0.5)
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_mailbox_actor_timeout() {
     Python::with_gil(|py| {
-        let module = myrmidon::py::make_module(py).unwrap();
+        let module = iris::py::make_module(py).unwrap();
         let rt = module.getattr(py, "PyRuntime").unwrap().call0(py).unwrap();
         let locals = PyDict::new(py);
         locals.set_item("rt", rt.clone()).unwrap();

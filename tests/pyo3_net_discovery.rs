@@ -11,7 +11,7 @@ fn test_remote_name_discovery() {
 
     // 1. Setup Node A (The Provider)
     let (rt_a, pid_a, results): (PyObject, u64, PyObject) = Python::with_gil(|py| {
-        let module = myrmidon::py::make_module(py).unwrap();
+        let module = iris::py::make_module(py).unwrap();
         let rt = module
             .as_ref(py)
             .getattr("PyRuntime")
@@ -53,7 +53,7 @@ def auth_handler(msg, results=results):
 
     // 2. Setup Node B (The Client)
     Python::with_gil(|py| {
-        let module = myrmidon::py::make_module(py).unwrap();
+        let module = iris::py::make_module(py).unwrap();
         let rt_b = module
             .as_ref(py)
             .getattr("PyRuntime")

@@ -8,7 +8,7 @@ use std::time::Duration;
 #[tokio::test]
 async fn test_name_registration_and_resolution() {
     Python::with_gil(|py| {
-        let module = myrmidon::py::make_module(py).expect("make_module");
+        let module = iris::py::make_module(py).expect("make_module");
         let rt_type = module.as_ref(py).getattr("PyRuntime").unwrap();
         let rt = rt_type.call0().unwrap();
 
@@ -59,6 +59,5 @@ def named_handler(msg, results=results):
     Python::with_gil(|py| {
         // (Re-accessing the runtime and results would require passing them out,
         // but for a single block test we verify the logic here)
-        // Check if the results list (if we had it) contains "hello registry"
     });
 }

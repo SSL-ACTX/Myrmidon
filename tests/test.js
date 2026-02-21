@@ -5,7 +5,7 @@ const sleep = promisify(setTimeout);
 
 const rt = new NodeRuntime();
 
-console.log("--- Myrmidon Node.js Functional Tests ---");
+console.log("--- Iris Node.js Functional Tests ---");
 
 async function test_push_actor() {
     console.log("[1/3] Testing Push Actor...");

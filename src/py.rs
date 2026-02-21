@@ -644,7 +644,7 @@ impl PyRuntime {
                                         let cb = guard.as_ref(py);
                                         let pybytes = PyBytes::new(py, &bytes);
                                         if let Err(e) = cb.call1((pybytes,)) {
-                                            eprintln!("[Myrmidon] Python actor exception: {}", e);
+                                            eprintln!("[Iris] Python actor exception: {}", e);
                                             e.print(py);
                                         }
                                     });
@@ -729,7 +729,7 @@ impl PyRuntime {
                                     let cb = guard.as_ref(py);
                                     let pybytes = PyBytes::new(py, &bytes);
                                     if let Err(e) = cb.call1((pybytes,)) {
-                                        eprintln!("[Myrmidon] Python actor exception: {}", e);
+                                        eprintln!("[Iris] Python actor exception: {}", e);
                                         e.print(py);
                                     }
                                 });
@@ -812,7 +812,7 @@ impl PyRuntime {
                                 let cb = guard.as_ref(py);
                                 let pybytes = PyBytes::new(py, &bytes);
                                 if let Err(e) = cb.call1((pybytes,)) {
-                                    eprintln!("[Myrmidon] Python actor exception: {}", e);
+                                    eprintln!("[Iris] Python actor exception: {}", e);
                                     e.print(py);
                                 }
                             });
@@ -834,7 +834,7 @@ impl PyRuntime {
                             let cb = guard.as_ref(py);
                             let pybytes = PyBytes::new(py, &bytes);
                             if let Err(e) = cb.call1((pybytes,)) {
-                                eprintln!("[Myrmidon] Python actor exception: {}", e);
+                                eprintln!("[Iris] Python actor exception: {}", e);
                                 e.print(py);
                             }
                         });
@@ -873,7 +873,7 @@ impl PyRuntime {
                     Python::with_gil(|py| {
                         // Just call the function. It is expected to block on mailbox.recv()
                         if let Err(e) = py_callable.call1(py, (mailbox,)) {
-                            eprintln!("[Myrmidon] Python mailbox actor exception: {}", e);
+                            eprintln!("[Iris] Python mailbox actor exception: {}", e);
                             e.print(py);
                         }
                     });
@@ -1109,13 +1109,13 @@ impl PyRuntime {
 
 #[cfg(feature = "pyo3")]
 #[pymodule]
-fn myrmidon(_py: Python, m: &PyModule) -> PyResult<()> {
+fn iris(_py: Python, m: &PyModule) -> PyResult<()> {
     populate_module(m)
 }
 
 #[cfg(feature = "pyo3")]
 pub fn make_module(py: Python) -> PyResult<Py<PyModule>> {
-    let m = PyModule::new(py, "myrmidon")?;
+    let m = PyModule::new(py, "iris")?;
     populate_module(m)?;
     Ok(m.into())
 }

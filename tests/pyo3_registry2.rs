@@ -7,7 +7,7 @@ use pyo3::types::PyDict;
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_registry_lifecycle() {
     Python::with_gil(|py| {
-        let module = myrmidon::py::make_module(py).unwrap();
+        let module = iris::py::make_module(py).unwrap();
         let rt = module.getattr(py, "PyRuntime").unwrap().call0(py).unwrap();
         let locals = PyDict::new(py);
         locals.set_item("rt", rt).unwrap();
@@ -63,7 +63,7 @@ rt.stop(pid)
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_communication_via_name() {
     Python::with_gil(|py| {
-        let module = myrmidon::py::make_module(py).unwrap();
+        let module = iris::py::make_module(py).unwrap();
         let rt = module.getattr(py, "PyRuntime").unwrap().call0(py).unwrap();
         let locals = PyDict::new(py);
         locals.set_item("rt", rt).unwrap();
@@ -118,7 +118,7 @@ time.sleep(0.2)
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_register_non_existent_returns_none() {
     Python::with_gil(|py| {
-        let module = myrmidon::py::make_module(py).unwrap();
+        let module = iris::py::make_module(py).unwrap();
         let rt = module.getattr(py, "PyRuntime").unwrap().call0(py).unwrap();
         let locals = PyDict::new(py);
         locals.set_item("rt", rt).unwrap();

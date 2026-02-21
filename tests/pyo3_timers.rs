@@ -7,7 +7,7 @@ use std::time::Duration;
 #[tokio::test]
 async fn test_send_after_delivers_message() {
     Python::with_gil(|py| {
-        let module = myrmidon::py::make_module(py).unwrap();
+        let module = iris::py::make_module(py).unwrap();
         let rt = module.as_ref(py).getattr("PyRuntime").unwrap().call0().unwrap();
 
         // Spawn an observed handler to collect messages

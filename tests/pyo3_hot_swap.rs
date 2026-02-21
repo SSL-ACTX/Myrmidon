@@ -10,7 +10,7 @@ async fn test_hot_swap_flow() {
     // 1. Setup: Create Runtime and shared results list
     let (rt, pid, results, handler_b): (PyObject, u64, PyObject, PyObject) =
         Python::with_gil(|py| {
-            let module = myrmidon::py::make_module(py).expect("make_module");
+            let module = iris::py::make_module(py).expect("make_module");
             let runtime_type = module
                 .as_ref(py)
                 .getattr("PyRuntime")

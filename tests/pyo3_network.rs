@@ -11,7 +11,7 @@ async fn test_distributed_messaging() {
 
     // 1. Setup Node A (The Receiver)
     let (rt_a, pid_a, results): (PyObject, u64, PyObject) = Python::with_gil(|py| {
-        let module = myrmidon::py::make_module(py).expect("make_module");
+        let module = iris::py::make_module(py).expect("make_module");
         let rt_type = module.as_ref(py).getattr("PyRuntime").unwrap();
         let rt = rt_type.call0().unwrap();
 
@@ -48,7 +48,7 @@ def remote_handler(msg, results=results):
 
     // 2. Setup Node B (The Sender) and transmit
     Python::with_gil(|py| {
-        let module = myrmidon::py::make_module(py).expect("make_module");
+        let module = iris::py::make_module(py).expect("make_module");
         let rt_type = module.as_ref(py).getattr("PyRuntime").unwrap();
         let rt_b = rt_type.call0().unwrap();
 

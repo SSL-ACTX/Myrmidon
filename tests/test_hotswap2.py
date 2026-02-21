@@ -1,13 +1,13 @@
-import myrmidon
+import iris
 import time
 import random
 
 # Configuration
 SWAP_COUNT = 5000       # Total times we swap the behavior
 MSG_COUNT = 20000       # Total messages to send during swaps
-rt = myrmidon.PyRuntime()
+rt = iris.PyRuntime()
 
-print(f"--- Myrmidon Hot Swap Stress Test: {myrmidon.version()} ---")
+print(f"--- Iris Hot Swap Stress Test: {iris.version()} ---")
 
 # Define two distinct behaviors to swap between
 def logic_a(msg):

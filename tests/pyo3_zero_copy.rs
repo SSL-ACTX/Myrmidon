@@ -5,7 +5,7 @@ use pyo3::prelude::*;
 #[tokio::test]
 async fn py_zero_copy_send() {
     let rt_py = Python::with_gil(|py| {
-        let module = myrmidon::py::make_module(py).expect("make_module");
+        let module = iris::py::make_module(py).expect("make_module");
         let runtime_type = module
             .as_ref(py)
             .getattr("PyRuntime")
@@ -26,7 +26,7 @@ async fn py_zero_copy_send() {
 
     // allocate a Rust-owned buffer and write into it from Python
     Python::with_gil(|py| {
-        let module = myrmidon::py::make_module(py).expect("make_module");
+        let module = iris::py::make_module(py).expect("make_module");
         let rv = module
             .as_ref(py)
             .call_method1("allocate_buffer", (5usize,))

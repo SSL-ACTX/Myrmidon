@@ -1,11 +1,11 @@
 # tests/test_discovery.py
-import myrmidon
+import iris
 import time
 import threading
 
 def run_server():
     """Simulates Node A (The Provider)"""
-    rt_a = myrmidon.Runtime()
+    rt_a = iris.Runtime()
     rt_a.listen("127.0.0.1:9000")
 
     def auth_handler(msg):
@@ -29,7 +29,7 @@ time.sleep(1)
 
 # 2. Setup Node B (The Client)
 print("--- Starting Remote Discovery Test ---")
-rt_b = myrmidon.Runtime()
+rt_b = iris.Runtime()
 node_a_addr = "127.0.0.1:9000"
 
 print(f"[Node B] Querying {node_a_addr} for 'auth-service'...")

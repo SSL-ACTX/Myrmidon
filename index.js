@@ -21,13 +21,13 @@ switch (platform) {
   case 'android':
     if (arch === 'arm64') {
       try {
-        nativeBinding = require('./myrmidon.android-arm64.node')
+        nativeBinding = require('./iris.android-arm64.node')
       } catch (e) {
         loadError = e
       }
     } else if (arch === 'arm') {
       try {
-        nativeBinding = require('./myrmidon.android-arm-eabi.node')
+        nativeBinding = require('./iris.android-arm-eabi.node')
       } catch (e) {
         loadError = e
       }
@@ -36,7 +36,7 @@ switch (platform) {
   case 'win32':
     if (arch === 'x64') {
       try {
-        nativeBinding = require('./myrmidon.win32-x64-msvc.node')
+        nativeBinding = require('./iris.win32-x64-msvc.node')
       } catch (e) {
         loadError = e
       }
@@ -44,13 +44,13 @@ switch (platform) {
     break
   case 'darwin':
     try {
-        nativeBinding = require('./myrmidon.darwin-universal.node')
+        nativeBinding = require('./iris.darwin-universal.node')
     } catch (e) {
         // Fallback for specific archs if universal not found
         if (arch === 'x64') {
-             nativeBinding = require('./myrmidon.darwin-x64.node')
+             nativeBinding = require('./iris.darwin-x64.node')
         } else if (arch === 'arm64') {
-             nativeBinding = require('./myrmidon.darwin-arm64.node')
+             nativeBinding = require('./iris.darwin-arm64.node')
         }
     }
     break
@@ -58,13 +58,13 @@ switch (platform) {
     if (arch === 'x64') {
       if (isMusl()) {
         try {
-          nativeBinding = require('./myrmidon.linux-x64-musl.node')
+          nativeBinding = require('./iris.linux-x64-musl.node')
         } catch (e) {
           loadError = e
         }
       } else {
         try {
-          nativeBinding = require('./myrmidon.linux-x64-gnu.node')
+          nativeBinding = require('./iris.linux-x64-gnu.node')
         } catch (e) {
           loadError = e
         }
@@ -72,13 +72,13 @@ switch (platform) {
     } else if (arch === 'arm64') {
        if (isMusl()) {
         try {
-          nativeBinding = require('./myrmidon.linux-arm64-musl.node')
+          nativeBinding = require('./iris.linux-arm64-musl.node')
         } catch (e) {
           loadError = e
         }
       } else {
         try {
-          nativeBinding = require('./myrmidon.linux-arm64-gnu.node')
+          nativeBinding = require('./iris.linux-arm64-gnu.node')
         } catch (e) {
           loadError = e
         }

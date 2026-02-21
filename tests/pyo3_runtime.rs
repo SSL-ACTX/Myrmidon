@@ -6,7 +6,7 @@ use pyo3::prelude::*;
 async fn py_runtime_spawn_and_send() {
     // create a single PyRuntime instance and keep it alive across await points
     let rt_py = Python::with_gil(|py| {
-        let module = myrmidon::py::make_module(py).expect("make_module");
+        let module = iris::py::make_module(py).expect("make_module");
         let runtime_type = module
             .as_ref(py)
             .getattr("PyRuntime")
@@ -53,7 +53,7 @@ async fn py_runtime_spawn_and_send() {
 
     // --- NEW: spawn a Python-backed handler that appends to a Python list ---
     let lst_obj: pyo3::PyObject = Python::with_gil(|py| {
-        let module = myrmidon::py::make_module(py).expect("make_module");
+        let module = iris::py::make_module(py).expect("make_module");
         let runtime_type = module
             .as_ref(py)
             .getattr("PyRuntime")
@@ -103,7 +103,7 @@ async fn py_runtime_spawn_and_send() {
 
     // --- NEW: register a Python factory with the supervisor and validate ---
     Python::with_gil(|py| {
-        let module = myrmidon::py::make_module(py).expect("make_module");
+        let module = iris::py::make_module(py).expect("make_module");
         let runtime_type = module
             .as_ref(py)
             .getattr("PyRuntime")

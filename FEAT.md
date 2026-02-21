@@ -1,6 +1,6 @@
-# 🐜 Myrmidon – Generalization Feature Checklist
+# 🐜 Iris – Generalization Feature Checklist
 
-> **Goal:** Evolve Myrmidon from a high-performance actor runtime into a **general, language-agnostic, BEAM-class foundation**.
+> **Goal:** Evolve Iris from a high-performance actor runtime into a **general, language-agnostic, BEAM-class foundation**.
 
 ---
 

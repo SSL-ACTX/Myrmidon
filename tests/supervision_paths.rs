@@ -1,4 +1,4 @@
-use myrmidon::Runtime;
+use iris::Runtime;
 
 #[test]
 fn path_registration_and_listing() {
